@@ -1,7 +1,10 @@
 ; Build with Inno Setup 6
 ; Output: Windows installer (.exe)
+; 注意: 安装目录使用英文路径以避免 QtWebEngine 中文路径崩溃
 
 #define MyAppName "AI招聘工作台"
+#define MyAppExeName "AIBossWorkbench.exe"
+#define MyAppDirName "AIBossWorkbench"
 #define MyAppPublisher "AI招聘工作台"
 #define VersionFileHandle FileOpen("app_version.txt")
 #if VersionFileHandle
@@ -16,27 +19,29 @@ AppId={{D4A5C4BB-CC45-47F3-B8C8-0A6BBE27F4A1}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={autopf}\{#MyAppDirName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+DisableDirPage=yes
 OutputDir=release
-OutputBaseFilename=AIBossWorkbench-Windows-Installer-v{#MyAppVersion}
+OutputBaseFilename=AIBossWorkbench-Setup-v{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+UninstallDisplayName={#MyAppName}
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "dist\AI招聘工作台\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "dist\AIBossWorkbench\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\AI招聘工作台.exe"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\AI招聘工作台.exe"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"
 
 [Run]
-Filename: "{app}\AI招聘工作台.exe"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent

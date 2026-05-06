@@ -1,6 +1,18 @@
 from __future__ import annotations
 
 import os
+import sys
+
+# --- QtWebEngine sandbox fix (MUST run before any PySide6/Qt import) ---
+os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
+os.environ["QT_WEBENGINE_DISABLE_SANDBOX"] = "1"
+os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--no-sandbox --disable-dev-shm-usage --disable-gpu-sandbox"
+if "--no-sandbox" not in sys.argv:
+    sys.argv.append("--no-sandbox")
+if "--disable-gpu-sandbox" not in sys.argv:
+    sys.argv.append("--disable-gpu-sandbox")
+# --- End sandbox fix ---
+
 import json
 import hashlib
 import math
@@ -9,7 +21,6 @@ import shutil
 import socket
 import sqlite3
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -6143,7 +6154,7 @@ class BossWorkbench(QMainWindow):
             ("候选人池", self.build_pool()),
             ("岗位配置", self.build_job_config()),
             ("话术模板", self.build_templates()),
-            ("飞书与用量", self.build_auth_settings()),
+            # ("飞书与用量", self.build_auth_settings()),  # 暂时隐藏
         ]
         for i, (label, page) in enumerate(nav_items):
             button = QPushButton(label)
