@@ -6154,14 +6154,18 @@ class BossWorkbench(QMainWindow):
             ("候选人池", self.build_pool()),
             ("岗位配置", self.build_job_config()),
             ("话术模板", self.build_templates()),
-            # ("飞书与用量", self.build_auth_settings()),  # 暂时隐藏
+            ("飞书与用量", self.build_auth_settings()),
         ]
+        hidden_labels = {"飞书与用量"}  # 隐藏这些菜单按钮（页面仍然加载）
         for i, (label, page) in enumerate(nav_items):
             button = QPushButton(label)
             button.setCheckable(True)
             button.clicked.connect(lambda checked=False, index=i: self.stack.setCurrentIndex(index))
             self.nav_group.addButton(button)
-            nav_layout.addWidget(button, i // 3, i % 3)
+            if label not in hidden_labels:
+                nav_layout.addWidget(button, i // 3, i % 3)
+            else:
+                button.setVisible(False)
             self.stack.addWidget(page)
             if i == 0:
                 button.setChecked(True)
