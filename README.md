@@ -101,6 +101,10 @@ python scripts/generate_windows_update_manifest.py \
 
 - [windows-release.yml](/Users/weiyifeng/ai-boss/source_share_clean_20260506/.github/workflows/windows-release.yml)
 
+发布前请在仓库 `Settings -> Secrets and variables -> Actions` 配置：
+
+- `APP_CONFIG_JSON`：完整的 `app_config.json` 内容（包含飞书 App ID / App Secret 等）
+
 触发规则：
 
 1. 修改 `app_version.txt` 为新版本（例如 `1.0.1`）

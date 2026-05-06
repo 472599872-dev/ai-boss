@@ -33,7 +33,14 @@ if exist dist rmdir /s /q dist
 del /q "AI招聘工作台.spec" 2>nul
 
 echo [4/6] Build exe/app folder...
-call .venv\Scripts\pyinstaller.exe --noconfirm --windowed --name "AI招聘工作台" --add-data "app_version.txt;." main.py
+set ADD_DATA_ARGS=--add-data "app_version.txt;."
+if exist app_config.json (
+  echo Packaging app_config.json into installer...
+  set ADD_DATA_ARGS=!ADD_DATA_ARGS! --add-data "app_config.json;."
+) else (
+  echo app_config.json not found. Installer will fall back to default empty config.
+)
+call .venv\Scripts\pyinstaller.exe --noconfirm --windowed --name "AI招聘工作台" !ADD_DATA_ARGS! main.py
 if errorlevel 1 goto :err
 
 echo [5/6] Zip distribution...

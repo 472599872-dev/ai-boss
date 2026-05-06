@@ -45,6 +45,19 @@ jobs:
           }
           Write-Host "Tag and app version validated: $tagVersion"
 
+      - name: Prepare app config
+        shell: pwsh
+        env:
+          APP_CONFIG_JSON: ${{ secrets.APP_CONFIG_JSON }}
+        run: |
+          if ($env:APP_CONFIG_JSON) {
+            Set-Content -Path "app_config.json" -Value $env:APP_CONFIG_JSON -Encoding UTF8
+            Write-Host "app_config.json prepared from APP_CONFIG_JSON secret."
+          }
+          if (-not (Test-Path "app_config.json")) {
+            throw "app_config.json is missing. Please set repository secret APP_CONFIG_JSON."
+          }
+
       - name: Build Windows installer and manifest
         shell: pwsh
         run: |

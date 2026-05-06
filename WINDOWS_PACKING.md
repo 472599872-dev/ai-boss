@@ -12,6 +12,10 @@
 
 - `.github/workflows/windows-release.yml`
 
+首次使用自动发布前，需要在仓库 Actions Secrets 中配置：
+
+- `APP_CONFIG_JSON`：完整 `app_config.json` 文本（用于把飞书配置一并打进安装包）
+
 每次发版只需：
 
 1. 修改 `app_version.txt`（如 `1.0.1`）

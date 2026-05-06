@@ -86,7 +86,21 @@ if (-not (Test-Path "release")) {
 }
 
 Write-Step "执行 PyInstaller"
-& $python -m PyInstaller --noconfirm --windowed --name "AI招聘工作台" --add-data "app_version.txt;." main.py
+$pyinstallerArgs = @(
+    "-m", "PyInstaller",
+    "--noconfirm",
+    "--windowed",
+    "--name", "AI招聘工作台",
+    "--add-data", "app_version.txt;."
+)
+if (Test-Path "app_config.json") {
+    Write-Step "打包配置：包含 app_config.json"
+    $pyinstallerArgs += @("--add-data", "app_config.json;.")
+} else {
+    Write-Warning "app_config.json not found. Installer will use default empty config."
+}
+$pyinstallerArgs += "main.py"
+& $python @pyinstallerArgs
 
 $distDir = Join-Path $root "dist\AI招聘工作台"
 if (-not (Test-Path $distDir)) {
