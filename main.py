@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 import webbrowser
@@ -143,6 +144,7 @@ DB_PATH = APP_DATA_DIR / "boss_workbench.sqlite3"
 LOG_DIR = APP_DATA_DIR / "logs"
 LOG_PATH = LOG_DIR / "scan.log"
 FEISHU_LOGIN_LOG_PATH = LOG_DIR / "feishu_login.log"
+RUNTIME_ERROR_LOG_PATH = LOG_DIR / "runtime_error.log"
 RAW_PROFILE_DIR = APP_DATA_DIR / "candidate_profiles"
 WEB_PROFILE_DIR = APP_DATA_DIR / "web_profile"
 UPDATE_DIR = APP_DATA_DIR / "updates"
@@ -165,6 +167,55 @@ def write_feishu_login_log(event: str, payload: dict[str, Any] | None = None) ->
     }
     with FEISHU_LOGIN_LOG_PATH.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+
+def write_runtime_error_log(
+    event: str,
+    payload: dict[str, Any] | None = None,
+    exc: BaseException | None = None,
+    traceback_text: str = "",
+) -> None:
+    LOG_DIR.mkdir(exist_ok=True)
+    record = {
+        "time": datetime.now().isoformat(timespec="milliseconds"),
+        "event": str(event or "").strip() or "unknown",
+        "payload": payload or {},
+    }
+    if exc is not None:
+        record["error_type"] = exc.__class__.__name__
+        record["error"] = str(exc)
+        record["traceback"] = traceback_text or traceback.format_exc()
+    with RUNTIME_ERROR_LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+
+def cleanup_windows_web_profile_locks() -> None:
+    if not sys.platform.startswith("win"):
+        return
+    lock_names = {
+        "SingletonCookie",
+        "SingletonLock",
+        "SingletonSocket",
+        "lockfile",
+        "LOCK",
+    }
+    for base_dir in (WEB_PROFILE_DIR, WEB_PROFILE_DIR / "storage", WEB_PROFILE_DIR / "cache"):
+        if not base_dir.exists():
+            continue
+        for path in base_dir.iterdir():
+            if path.name not in lock_names:
+                continue
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
+            except OSError as exc:
+                write_runtime_error_log(
+                    "windows_web_profile_lock_cleanup_failed",
+                    {"path": str(path)},
+                    exc,
+                )
 
 
 def bootstrap_runtime_storage() -> None:
@@ -338,7 +389,7 @@ class FeishuSession:
             email=str(payload.get("email") or "").strip(),
             access_token=access_token,
             refresh_token=str(payload.get("refresh_token") or "").strip(),
-            expires_at=int(payload.get("expires_at") or 0),
+            expires_at=safe_int(payload.get("expires_at"), 0),
             union_id=str(payload.get("union_id") or "").strip(),
             avatar_url=str(payload.get("avatar_url") or "").strip(),
             tenant_key=str(payload.get("tenant_key") or "").strip(),
@@ -1330,11 +1381,20 @@ def app_config_bool(key: str, default: bool = False) -> bool:
 
 
 def load_feishu_session(repo: Repository) -> FeishuSession | None:
-    return FeishuSession.from_dict(repo.json_setting(FEISHU_SESSION_SETTING))
+    try:
+        return FeishuSession.from_dict(repo.json_setting(FEISHU_SESSION_SETTING))
+    except Exception as exc:
+        write_runtime_error_log("load_feishu_session_failed", {}, exc)
+        repo.delete_setting(FEISHU_SESSION_SETTING)
+        return None
 
 
 def save_feishu_session(repo: Repository, session: FeishuSession) -> None:
-    repo.set_setting(FEISHU_SESSION_SETTING, json.dumps(asdict(session), ensure_ascii=False))
+    try:
+        repo.set_setting(FEISHU_SESSION_SETTING, json.dumps(asdict(session), ensure_ascii=False))
+    except Exception as exc:
+        write_runtime_error_log("save_feishu_session_failed", {"open_id_suffix": session.open_id[-6:] if session.open_id else ""}, exc)
+        raise
 
 
 class OAuthCallbackServer(HTTPServer):
@@ -2516,6 +2576,13 @@ class UsageManager:
                     self._remote_cache[session.open_id] = (time.time(), remote)
             except IntegrationError as exc:
                 error = str(exc)
+            except Exception as exc:
+                write_runtime_error_log(
+                    "usage_summary_remote_failed",
+                    {"open_id_suffix": session.open_id[-6:] if session.open_id else ""},
+                    exc,
+                )
+                error = "飞书额度读取异常，已自动降级为本地统计。"
         return {"local": local, "local_total": local_total, "remote": remote, "error": error}
 
 
@@ -5904,7 +5971,15 @@ class FeishuLoginDialog(QDialog):
             return
         self.session = session
         self.quota = quota if isinstance(quota, UserQuota) else None
-        save_feishu_session(self.repo, self.session)
+        try:
+            save_feishu_session(self.repo, self.session)
+        except Exception as exc:
+            write_feishu_login_log("feishu_login_finished_error", {"trace_id": self.login_trace_id, "error": f"save_session_failed:{str(exc)[:300]}"})
+            self.status_label.setText("飞书登录失败：本地保存登录信息时出错。")
+            QMessageBox.warning(self, "飞书登录失败", "本地保存登录信息时出错，请关闭应用后重试。")
+            self.session = None
+            self.quota = None
+            return
         write_feishu_login_log(
             "feishu_login_finished_ok",
             {
@@ -6436,7 +6511,10 @@ class BossWorkbench(QMainWindow):
         top.addWidget(self.url_input, 1)
         top.addWidget(go)
         layout.addLayout(top)
+        cleanup_windows_web_profile_locks()
         WEB_PROFILE_DIR.mkdir(exist_ok=True)
+        (WEB_PROFILE_DIR / "storage").mkdir(parents=True, exist_ok=True)
+        (WEB_PROFILE_DIR / "cache").mkdir(parents=True, exist_ok=True)
         self.browser_profile = QWebEngineProfile("boss-workbench-profile", self)
         self.browser_profile.setPersistentStoragePath(str(WEB_PROFILE_DIR / "storage"))
         self.browser_profile.setCachePath(str(WEB_PROFILE_DIR / "cache"))
@@ -6547,7 +6625,11 @@ class BossWorkbench(QMainWindow):
             self.usage_manager._remote_cache[self.feishu_session.open_id] = (time.time(), dialog.quota)
         self.load_feishu_settings()
         self.refresh_feishu_session_views()
-        self.refresh_usage_summary()
+        try:
+            self.refresh_usage_summary()
+        except Exception as exc:
+            write_runtime_error_log("reauth_refresh_usage_failed", {"open_id_suffix": self.feishu_session.open_id[-6:] if self.feishu_session.open_id else ""}, exc)
+            self.feishu_usage_label.setText("今日用量：飞书登录成功，但云端读取异常，已切换为本地统计。")
         self.append_log(f"飞书登录成功：{self.feishu_session.name or self.feishu_session.open_id}")
         return True
 
@@ -6571,6 +6653,10 @@ class BossWorkbench(QMainWindow):
         except IntegrationError as exc:
             QMessageBox.warning(self, "同步失败", str(exc))
             return
+        except Exception as exc:
+            write_runtime_error_log("sync_usage_to_feishu_failed", {"open_id_suffix": self.feishu_session.open_id[-6:] if self.feishu_session.open_id else ""}, exc)
+            QMessageBox.warning(self, "同步失败", "飞书云文档同步出现异常，请稍后重试。")
+            return
         self.usage_manager.clear_remote_cache()
         self.refresh_usage_summary()
         self.append_log("人员额度表中的 token 用量已同步。")
@@ -6581,7 +6667,16 @@ class BossWorkbench(QMainWindow):
         if not self.feishu_session:
             self.feishu_usage_label.setText("今日用量：未登录飞书，无法统计到个人维度。")
             return
-        summary = self.usage_manager.usage_summary(self.feishu_session)
+        try:
+            summary = self.usage_manager.usage_summary(self.feishu_session)
+        except Exception as exc:
+            write_runtime_error_log(
+                "refresh_usage_summary_failed",
+                {"open_id_suffix": self.feishu_session.open_id[-6:] if self.feishu_session.open_id else ""},
+                exc,
+            )
+            self.feishu_usage_label.setText("今日用量：飞书统计加载失败，已自动降级为本地统计。")
+            return
         local = summary["local"]
         local_total = summary.get("local_total") or {}
         remote = summary.get("remote")
@@ -7739,6 +7834,23 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+
+    def _handle_uncaught_exception(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            return
+        write_runtime_error_log(
+            "uncaught_exception",
+            {"exc_type": getattr(exc_type, "__name__", str(exc_type))},
+            exc,
+            "".join(traceback.format_exception(exc_type, exc, tb)),
+        )
+        QMessageBox.critical(
+            None,
+            "程序异常",
+            f"程序运行时出现异常：{exc}\n\n日志已写入：{RUNTIME_ERROR_LOG_PATH}",
+        )
+
+    sys.excepthook = _handle_uncaught_exception
     repo = Repository(DB_PATH)
     feishu = FeishuClient(repo)
     session = load_feishu_session(repo)
@@ -7749,13 +7861,35 @@ def main() -> int:
         except IntegrationError:
             repo.delete_setting(FEISHU_SESSION_SETTING)
             session = None
+        except Exception as exc:
+            write_runtime_error_log(
+                "startup_restore_session_failed",
+                {"open_id_suffix": session.open_id[-6:] if session and session.open_id else ""},
+                exc,
+            )
+            repo.delete_setting(FEISHU_SESSION_SETTING)
+            session = None
     if not session or (session.expires_at and session.expires_at <= int(time.time()) + 60):
         dialog = FeishuLoginDialog(repo)
         if dialog.exec() != QDialog.Accepted or not dialog.session:
             return 0
         session = dialog.session
         initial_quota = dialog.quota
-    window = BossWorkbench(repo, session, initial_quota=initial_quota)
+    try:
+        window = BossWorkbench(repo, session, initial_quota=initial_quota)
+    except Exception as exc:
+        write_runtime_error_log(
+            "boss_workbench_init_failed",
+            {"open_id_suffix": session.open_id[-6:] if session and session.open_id else ""},
+            exc,
+        )
+        repo.delete_setting(FEISHU_SESSION_SETTING)
+        QMessageBox.warning(
+            None,
+            "启动失败",
+            f"应用启动失败，已自动清理本次飞书登录缓存。\n\n请重新打开应用再登录。\n\n错误日志：{RUNTIME_ERROR_LOG_PATH}",
+        )
+        return 1
     window.show()
     return app.exec()
 
