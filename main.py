@@ -106,6 +106,7 @@ def default_config_path(app_data_dir: Path) -> Path:
 APP_DATA_DIR = default_app_data_dir() if getattr(sys, "frozen", False) else ROOT
 APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = default_config_path(APP_DATA_DIR)
+PACKAGED_CONFIG_PATH = ROOT / "app_config.json"
 DB_PATH = APP_DATA_DIR / "boss_workbench.sqlite3"
 LOG_DIR = APP_DATA_DIR / "logs"
 LOG_PATH = LOG_DIR / "scan.log"
@@ -1154,6 +1155,23 @@ def default_app_config() -> dict[str, Any]:
     return json.loads(json.dumps(DEFAULT_APP_CONFIG, ensure_ascii=False))
 
 
+def load_packaged_app_config() -> dict[str, Any] | None:
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        if not PACKAGED_CONFIG_PATH.exists() or PACKAGED_CONFIG_PATH.resolve() == CONFIG_PATH.resolve():
+            return None
+    except OSError:
+        return None
+    try:
+        raw = json.loads(PACKAGED_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return _normalize_app_config(raw)
+
+
 def _normalize_app_config(payload: dict[str, Any] | None) -> dict[str, Any]:
     config = default_app_config()
     if not isinstance(payload, dict):
@@ -1175,10 +1193,39 @@ def _normalize_app_config(payload: dict[str, Any] | None) -> dict[str, Any]:
     return config
 
 
+def _is_blank_config_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, list):
+        return len(value) == 0
+    if isinstance(value, dict):
+        return len(value) == 0
+    return False
+
+
+def _merge_missing_config_values(current: Any, packaged: Any) -> Any:
+    if isinstance(current, dict) and isinstance(packaged, dict):
+        merged = dict(current)
+        for key, packaged_value in packaged.items():
+            if key not in merged:
+                if not _is_blank_config_value(packaged_value):
+                    merged[key] = packaged_value
+                continue
+            merged_value = _merge_missing_config_values(merged.get(key), packaged_value)
+            merged[key] = merged_value
+        return merged
+    if _is_blank_config_value(current) and not _is_blank_config_value(packaged):
+        return packaged
+    return current
+
+
 def load_app_config(force: bool = False) -> dict[str, Any]:
     global _APP_CONFIG_CACHE, _APP_CONFIG_MTIME_NS
+    packaged_config = load_packaged_app_config()
     if not CONFIG_PATH.exists():
-        config = default_app_config()
+        config = packaged_config or default_app_config()
         save_app_config(config)
         return config
     try:
@@ -1191,6 +1238,14 @@ def load_app_config(force: bool = False) -> dict[str, Any]:
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    if packaged_config:
+        merged = _merge_missing_config_values(raw, packaged_config)
+        if merged != raw:
+            config = _normalize_app_config(merged)
+            save_app_config(config)
+            return config
     config = _normalize_app_config(raw)
     _APP_CONFIG_CACHE = config
     _APP_CONFIG_MTIME_NS = mtime_ns
