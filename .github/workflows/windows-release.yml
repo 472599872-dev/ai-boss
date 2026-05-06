@@ -1,0 +1,73 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Validate tag matches app version
+        shell: pwsh
+        run: |
+          $version = (Get-Content "app_version.txt" -Raw).Trim()
+          if (-not $version) {
+            throw "app_version.txt is empty."
+          }
+          $tag = "${{ github.ref_name }}"
+          if (-not $tag.StartsWith("v")) {
+            throw "Tag must start with v, current: $tag"
+          }
+          $tagVersion = $tag.Substring(1)
+          if ($tagVersion -ne $version) {
+            throw "Tag version ($tagVersion) does not match app_version.txt ($version)."
+          }
+          Write-Host "Tag and app version validated: $tagVersion"
+
+      - name: Build Windows installer and manifest
+        shell: pwsh
+        run: |
+          $baseUrl = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+          powershell -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -BaseUrl $baseUrl
+
+      - name: Upload CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-${{ github.ref_name }}
+          path: |
+            release/*.exe
+            release/*.zip
+            release/latest.json
+          if-no-files-found: error
+
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release/*.exe
+            release/*.zip
+            release/latest.json
+          fail_on_unmatched_files: true

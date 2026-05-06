@@ -95,9 +95,33 @@ python scripts/generate_windows_update_manifest.py \
 - GitHub Releases
 - 阿里云 OSS + 自定义域名/CDN
 
-如果是 OSS，静态网站托管可以直接发布静态文件；但如果 Bucket 在中国内地并绑定自定义域名，需要完成 ICP 备案。 citeturn2view1
+## GitHub 自动发布（已配置）
 
-GitHub Releases 可以挂 release asset，也能通过 API 提供直接下载地址和 `sha256` 摘要，适合作为安装包分发源。 citeturn1view3turn2view4
+仓库已包含工作流：
+
+- [windows-release.yml](/Users/weiyifeng/ai-boss/source_share_clean_20260506/.github/workflows/windows-release.yml)
+
+触发规则：
+
+1. 修改 `app_version.txt` 为新版本（例如 `1.0.1`）
+2. 提交并推送代码
+3. 打标签并推送标签（必须与版本号一致）
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+工作流会自动：
+
+1. 在 Windows runner 打包
+2. 生成安装器 `release/AI招聘工作台-Windows-Installer-v版本号.exe`
+3. 生成 `release/latest.json`
+4. 发布到 GitHub Releases（同一个 tag 的 release 资产）
+
+客户端建议固定使用这个更新清单地址（始终指向最新 release）：
+
+- `https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest.json`
 
 ## 飞书与 Token 用量配置
 

@@ -6,6 +6,33 @@
 - PowerShell（系统自带）
 - 可选：Inno Setup 6（生成安装器）
 
+## 0. 自动打包自动发布（推荐）
+
+仓库已内置 GitHub Actions 工作流：
+
+- `.github/workflows/windows-release.yml`
+
+每次发版只需：
+
+1. 修改 `app_version.txt`（如 `1.0.1`）
+2. 提交并推送代码
+3. 推送同版本标签：
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+GitHub 会自动：
+
+1. 打 Windows 安装包
+2. 生成 `latest.json`
+3. 发布到该 tag 对应的 Release
+
+客户端固定更新地址可用：
+
+- `https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest.json`
+
 ## 2. 生成可运行目录 + ZIP
 在项目根目录双击：
 
