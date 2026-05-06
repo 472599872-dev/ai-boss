@@ -83,7 +83,7 @@ run_app.command
 ```bash
 python scripts/generate_windows_update_manifest.py \
   --base-url https://your-domain/releases/1.0.0 \
-  --installer release/AI招聘工作台-Windows-Installer-v1.0.0.exe \
+  --installer release/AIBossWorkbench-Windows-Installer-v1.0.0.exe \
   --out release/latest.json
 ```
 
@@ -115,7 +115,7 @@ git push origin v1.0.1
 工作流会自动：
 
 1. 在 Windows runner 打包
-2. 生成安装器 `release/AI招聘工作台-Windows-Installer-v版本号.exe`
+2. 生成安装器 `release/AIBossWorkbench-Windows-Installer-v版本号.exe`
 3. 生成 `release/latest.json`
 4. 发布到 GitHub Releases（同一个 tag 的 release 资产）
 

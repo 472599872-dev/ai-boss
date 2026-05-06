@@ -40,7 +40,7 @@ GitHub 会自动：
 
 产物：
 - `dist\AI招聘工作台\`（可直接运行）
-- `release\AI招聘工作台-Windows-v版本号.zip`（可分发）
+- `release\AIBossWorkbench-Windows-v版本号.zip`（可分发）
 - 如果本机已安装 Inno Setup 6，还会自动生成安装器
 
 也可以用 PowerShell 一键完整打包（自动尝试安装 Inno Setup，并生成 `latest.json`）：
@@ -57,7 +57,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_installer.ps1 -
 3. 点击 Build
 
 产物：
-- `release\AI招聘工作台-Windows-Installer-v版本号.exe`
+- `release\AIBossWorkbench-Windows-Installer-v版本号.exe`
 
 ## 4. 生成在线更新清单
 
@@ -66,7 +66,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_installer.ps1 -
 ```bash
 python scripts/generate_windows_update_manifest.py ^
   --base-url https://your-domain/releases/1.0.0 ^
-  --installer release\AI招聘工作台-Windows-Installer-v1.0.0.exe ^
+  --installer release\AIBossWorkbench-Windows-Installer-v1.0.0.exe ^
   --out release\latest.json
 ```
 

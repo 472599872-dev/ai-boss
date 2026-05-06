@@ -94,7 +94,7 @@ if (-not (Test-Path $distDir)) {
 }
 
 Write-Step "生成 ZIP"
-$zipPath = Join-Path $root ("release\AI招聘工作台-Windows-v{0}.zip" -f $version)
+$zipPath = Join-Path $root ("release\AIBossWorkbench-Windows-v{0}.zip" -f $version)
 if (Test-Path $zipPath) {
     Remove-Item $zipPath -Force
 }
@@ -104,7 +104,7 @@ Write-Step "生成安装器 EXE"
 $iscc = Ensure-InnoSetup
 & $iscc "windows_installer.iss"
 
-$installerPath = Join-Path $root ("release\AI招聘工作台-Windows-Installer-v{0}.exe" -f $version)
+$installerPath = Join-Path $root ("release\AIBossWorkbench-Windows-Installer-v{0}.exe" -f $version)
 if (-not (Test-Path $installerPath)) {
     throw "安装器未生成: $installerPath"
 }

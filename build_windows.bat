@@ -38,7 +38,7 @@ if errorlevel 1 goto :err
 
 echo [5/6] Zip distribution...
 if not exist release mkdir release
-set ZIP_PATH=release\AI招聘工作台-Windows-v%APP_VERSION%.zip
+set ZIP_PATH=release\AIBossWorkbench-Windows-v%APP_VERSION%.zip
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Force -Path 'dist\AI招聘工作台\*' -DestinationPath '%ZIP_PATH%'"
 if errorlevel 1 goto :err
 
@@ -61,10 +61,10 @@ echo   - Version      : %APP_VERSION%
 echo   - EXE folder   : dist\AI招聘工作台\
 echo   - ZIP file     : %ZIP_PATH%
 if defined ISCC_EXE (
-  echo   - Installer    : release\AI招聘工作台-Windows-Installer-v%APP_VERSION%.exe
+  echo   - Installer    : release\AIBossWorkbench-Windows-Installer-v%APP_VERSION%.exe
   echo.
   echo Next step:
-  echo   python scripts\generate_windows_update_manifest.py --base-url https://your-domain/releases/%APP_VERSION% --installer release\AI招聘工作台-Windows-Installer-v%APP_VERSION%.exe --out release\latest.json
+  echo   python scripts\generate_windows_update_manifest.py --base-url https://your-domain/releases/%APP_VERSION% --installer release\AIBossWorkbench-Windows-Installer-v%APP_VERSION%.exe --out release\latest.json
 ) else (
   echo.
   echo Install Inno Setup 6 first if you want to generate the installer used by online update.
