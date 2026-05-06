@@ -65,17 +65,50 @@ APP_NAME = "AI 招聘工作台"
 VERSION_FILE_NAME = "app_version.txt"
 
 
-def read_app_version(default: str = "1.0.0") -> str:
+def packaged_resource_roots() -> list[Path]:
+    roots: list[Path] = []
+    candidates: list[Path | None] = []
     if getattr(sys, "frozen", False):
-        roots = [Path(sys.executable).resolve().parent, Path(__file__).resolve().parent]
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            candidates.append(Path(meipass))
+        executable_root = Path(sys.executable).resolve().parent
+        candidates.extend(
+            [
+                executable_root,
+                executable_root / "_internal",
+                Path(__file__).resolve().parent,
+            ]
+        )
     else:
-        roots = [Path(__file__).resolve().parent]
-    for root in roots:
-        path = root / VERSION_FILE_NAME
+        candidates.append(Path(__file__).resolve().parent)
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def find_packaged_resource(name: str) -> Path | None:
+    for root in packaged_resource_roots():
+        path = root / name
+        if path.exists():
+            return path
+    return None
+
+
+def read_app_version(default: str = "1.0.0") -> str:
+    path = find_packaged_resource(VERSION_FILE_NAME)
+    if path is not None:
         try:
             value = path.read_text(encoding="utf-8").strip()
         except OSError:
-            continue
+            value = ""
         if value:
             return value
     return default
@@ -106,7 +139,6 @@ def default_config_path(app_data_dir: Path) -> Path:
 APP_DATA_DIR = default_app_data_dir() if getattr(sys, "frozen", False) else ROOT
 APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = default_config_path(APP_DATA_DIR)
-PACKAGED_CONFIG_PATH = ROOT / "app_config.json"
 DB_PATH = APP_DATA_DIR / "boss_workbench.sqlite3"
 LOG_DIR = APP_DATA_DIR / "logs"
 LOG_PATH = LOG_DIR / "scan.log"
@@ -147,8 +179,8 @@ def bootstrap_runtime_storage() -> None:
         ("web_profile", WEB_PROFILE_DIR),
     )
     for legacy_name, target in legacy_items:
-        source = ROOT / legacy_name
-        if not source.exists() or target.exists():
+        source = find_packaged_resource(legacy_name)
+        if source is None or not source.exists() or target.exists():
             continue
         try:
             if source.is_dir():
@@ -1159,12 +1191,15 @@ def load_packaged_app_config() -> dict[str, Any] | None:
     if not getattr(sys, "frozen", False):
         return None
     try:
-        if not PACKAGED_CONFIG_PATH.exists() or PACKAGED_CONFIG_PATH.resolve() == CONFIG_PATH.resolve():
+        packaged_config_path = find_packaged_resource("app_config.json")
+        if packaged_config_path is None:
+            return None
+        if packaged_config_path.resolve() == CONFIG_PATH.resolve():
             return None
     except OSError:
         return None
     try:
-        raw = json.loads(PACKAGED_CONFIG_PATH.read_text(encoding="utf-8"))
+        raw = json.loads(packaged_config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(raw, dict):

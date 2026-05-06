@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "是否发布 GitHub Release"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -29,6 +36,7 @@ jobs:
         run: choco install innosetup --no-progress -y
 
       - name: Validate tag matches app version
+        if: github.event_name == 'push'
         shell: pwsh
         run: |
           $version = (Get-Content "app_version.txt" -Raw).Trim()
@@ -61,20 +69,25 @@ jobs:
       - name: Build Windows installer and manifest
         shell: pwsh
         run: |
-          $baseUrl = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
-          pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -BaseUrl $baseUrl
+          if ("${{ github.event_name }}" -eq "push") {
+            $baseUrl = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+            pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -BaseUrl $baseUrl
+          } else {
+            pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -SkipManifest
+          }
 
       - name: Upload CI artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-release-${{ github.ref_name }}
+          name: windows-release-${{ github.ref_name || github.sha }}
           path: |
             release/*.exe
             release/*.zip
             release/latest.json
-          if-no-files-found: error
+          if-no-files-found: ignore
 
       - name: Publish GitHub Release assets
+        if: github.event_name == 'push' || inputs.publish_release == true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
