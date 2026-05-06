@@ -49,7 +49,7 @@ jobs:
         shell: pwsh
         run: |
           $baseUrl = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
-          powershell -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -BaseUrl $baseUrl
+          pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -BaseUrl $baseUrl
 
       - name: Upload CI artifacts
         uses: actions/upload-artifact@v4
