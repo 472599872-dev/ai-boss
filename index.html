@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BOSS AI 招聘工作台原型</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="side-panel" aria-label="招聘工作台控制台">
+        <header class="brand-row">
+          <div>
+            <p class="eyebrow">本地桌面客户端原型</p>
+            <h1>AI 招聘工作台</h1>
+          </div>
+          <span class="status-pill">受控浏览</span>
+        </header>
+
+        <section class="job-switcher" aria-label="岗位切换">
+          <label for="jobSelect">当前岗位</label>
+          <select id="jobSelect">
+            <option value="product">AI 产品经理 · 上海</option>
+            <option value="frontend">前端工程师 · 杭州</option>
+            <option value="growth">增长运营 · 北京</option>
+          </select>
+        </section>
+
+        <nav class="nav-list" aria-label="主导航">
+          <button class="nav-item active" data-view="dashboard">工作台</button>
+          <button class="nav-item" data-view="inbound">投递人选</button>
+          <button class="nav-item" data-view="outbound">主动找人</button>
+          <button class="nav-item" data-view="pool">候选人池</button>
+          <button class="nav-item" data-view="jobs">岗位配置</button>
+          <button class="nav-item" data-view="templates">话术模板</button>
+        </nav>
+
+        <main class="panel-content">
+          <section class="view active" data-view-panel="dashboard">
+            <div class="summary-grid">
+              <article class="metric-block">
+                <span>待评估</span>
+                <strong>18</strong>
+              </article>
+              <article class="metric-block">
+                <span>可沟通</span>
+                <strong>9</strong>
+              </article>
+              <article class="metric-block">
+                <span>已索简历</span>
+                <strong>4</strong>
+              </article>
+              <article class="metric-block">
+                <span>已淘汰</span>
+                <strong>6</strong>
+              </article>
+            </div>
+
+            <section class="control-band">
+              <div>
+                <h2>今日执行</h2>
+                <p>当前聚焦：投递人选优先处理，主动找人保持人工确认。</p>
+              </div>
+              <button class="primary-action" data-jump="inbound">处理投递</button>
+            </section>
+
+            <section class="pipeline">
+              <h2>候选人漏斗</h2>
+              <div class="pipeline-row">
+                <span>new</span>
+                <div><b style="width: 76%"></b></div>
+                <strong>23</strong>
+              </div>
+              <div class="pipeline-row">
+                <span>review</span>
+                <div><b style="width: 48%"></b></div>
+                <strong>14</strong>
+              </div>
+              <div class="pipeline-row">
+                <span>contact_ready</span>
+                <div><b style="width: 32%"></b></div>
+                <strong>9</strong>
+              </div>
+              <div class="pipeline-row">
+                <span>resume_requested</span>
+                <div><b style="width: 18%"></b></div>
+                <strong>4</strong>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" data-view-panel="inbound">
+            <div class="section-title">
+              <h2>投递人选扫描</h2>
+              <span>入口：/web/chat/index</span>
+            </div>
+            <div class="form-grid">
+              <label>开始序号<input id="inboundStart" type="number" min="1" value="1" /></label>
+              <label>结束序号<input id="inboundEnd" type="number" min="1" value="12" /></label>
+              <label class="wide">消息状态
+                <select id="messageState">
+                  <option>全部</option>
+                  <option>只看未读</option>
+                  <option>只看已读</option>
+                </select>
+              </label>
+            </div>
+            <div class="scan-actions">
+              <button class="primary-action" data-scan="inbound">开始扫描</button>
+              <button class="danger-action" data-stop>停止当前扫描</button>
+            </div>
+            <div class="scan-status">
+              <div>
+                <span>正在处理</span>
+                <strong id="scanPosition">未开始</strong>
+              </div>
+              <div>
+                <span>总数</span>
+                <strong id="scanTotal">0</strong>
+              </div>
+              <div>
+                <span>停止请求</span>
+                <strong id="stopState">否</strong>
+              </div>
+            </div>
+            <article class="evaluation-panel">
+              <h3>AI 评分输出</h3>
+              <div class="score-line"><strong id="scoreValue">86</strong><span>强推荐 · 建议沟通</span></div>
+              <dl>
+                <dt>命中项</dt><dd>AI 产品经验、B 端工具、候选人画像、数据分析</dd>
+                <dt>缺失项</dt><dd>薪资期望未确认、最近项目规模不明确</dd>
+                <dt>风险项</dt><dd>近两段经历周期偏短，需要追问离职原因</dd>
+                <dt>建议话术</dt><dd>你好，看了你的在线简历，AI 工具和招聘场景经验比较匹配，想进一步了解你最近一个 B 端产品项目的规模和职责边界。</dd>
+              </dl>
+            </article>
+          </section>
+
+          <section class="view" data-view-panel="outbound">
+            <div class="section-title">
+              <h2>主动找人</h2>
+              <span>入口：推荐牛人</span>
+            </div>
+            <div class="form-grid">
+              <label>扫描数量<input id="outboundLimit" type="number" min="1" value="20" /></label>
+              <label>分数阈值<input id="scoreThreshold" type="number" min="0" max="100" value="85" /></label>
+              <label class="toggle-row wide">
+                <input id="autoHello" type="checkbox" />
+                <span>自动打招呼</span>
+              </label>
+            </div>
+            <p class="quiet-note">默认只生成建议。开启自动打招呼后，也只有高于阈值且无排除风险的人选才会触发。</p>
+            <div class="scan-actions">
+              <button class="primary-action" data-scan="outbound">开始查看推荐牛人</button>
+              <button class="danger-action" data-stop>停止当前扫描</button>
+            </div>
+            <div class="recommend-list">
+              <article>
+                <strong>李然</strong>
+                <span>推荐卡片 03 · 92 分 · 可打招呼</span>
+              </article>
+              <article>
+                <strong>陈一舟</strong>
+                <span>推荐卡片 04 · 78 分 · 待确认</span>
+              </article>
+              <article>
+                <strong>周宁</strong>
+                <span>推荐卡片 05 · 88 分 · 建议人工确认</span>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" data-view-panel="pool">
+            <div class="section-title">
+              <h2>候选人池</h2>
+              <span>按岗位分池</span>
+            </div>
+            <div class="pool-toolbar">
+              <button class="subtle-action active">最近获取</button>
+              <button class="subtle-action">评分排序</button>
+              <button class="danger-text">清空当前岗位</button>
+            </div>
+            <div id="candidateList" class="candidate-list"></div>
+          </section>
+
+          <section class="view" data-view-panel="jobs">
+            <div class="section-title">
+              <h2>岗位配置</h2>
+              <span>多岗位独立规则</span>
+            </div>
+            <div class="config-list">
+              <label>岗位名称<input value="AI 产品经理" /></label>
+              <label>城市<input value="上海" /></label>
+              <label>薪资范围<input value="25K-40K" /></label>
+              <label>经验年限<input value="3-7 年" /></label>
+              <label>必备条件<textarea>AI 产品经验；B 端工具；独立需求分析；数据指标意识</textarea></label>
+              <label>加分项<textarea>招聘 SaaS；LLM 应用；工作流设计；增长实验</textarea></label>
+              <label>排除项<textarea>纯运营无产品经验；城市不匹配且不接受到岗；频繁短期跳槽</textarea></label>
+              <label>简历保存目录<input value="/Users/hzk/Documents/Resumes/AI产品经理" /></label>
+            </div>
+          </section>
+
+          <section class="view" data-view-panel="templates">
+            <div class="section-title">
+              <h2>话术模板</h2>
+              <span>按岗位和动作调用</span>
+            </div>
+            <div class="template-list">
+              <article>
+                <strong>初次沟通</strong>
+                <p>你好，看了你的经历，和我们正在招的岗位比较匹配，想进一步了解你最近一个相关项目。</p>
+              </article>
+              <article>
+                <strong>索要附件简历</strong>
+                <p>方便的话可以发一份附件简历吗？我这边想结合完整项目经历做进一步评估。</p>
+              </article>
+              <article>
+                <strong>追问关键经历</strong>
+                <p>想确认一下你在这个项目里主要负责策略、交互流程还是落地推进？团队规模大概是多少？</p>
+              </article>
+            </div>
+          </section>
+        </main>
+      </aside>
+
+      <section class="browser-panel" aria-label="BOSS 受控浏览器模拟区域">
+        <header class="browser-topbar">
+          <div class="window-controls"><span></span><span></span><span></span></div>
+          <div id="addressBar" class="address-bar">https://www.zhipin.com/web/chat/index</div>
+          <button class="subtle-action">登录态检测</button>
+        </header>
+
+        <div class="boss-page">
+          <aside class="boss-sidebar">
+            <div class="boss-logo">BOSS 直聘</div>
+            <button class="boss-menu active">沟通</button>
+            <button class="boss-menu">推荐牛人</button>
+            <button class="boss-menu">职位管理</button>
+          </aside>
+          <section class="chat-list">
+            <div class="list-header">
+              <strong>候选人列表</strong>
+              <span id="browserMode">投递人选</span>
+            </div>
+            <button class="chat-item active">
+              <span class="avatar">林</span>
+              <span><strong>林嘉</strong><small>未读 · AI 产品经理 · 上海</small></span>
+              <b>86</b>
+            </button>
+            <button class="chat-item">
+              <span class="avatar alt">李</span>
+              <span><strong>李然</strong><small>已读 · 产品负责人 · 杭州</small></span>
+              <b>92</b>
+            </button>
+            <button class="chat-item">
+              <span class="avatar warm">陈</span>
+              <span><strong>陈一舟</strong><small>未读 · 增长产品 · 北京</small></span>
+              <b>78</b>
+            </button>
+            <button class="chat-item">
+              <span class="avatar cool">周</span>
+              <span><strong>周宁</strong><small>已读 · AI 应用 · 上海</small></span>
+              <b>88</b>
+            </button>
+          </section>
+          <section class="candidate-detail">
+            <div class="detail-header">
+              <div>
+                <h2 id="detailName">林嘉</h2>
+                <p>AI 产品经理 · 5 年 · 上海 · 期望 30K-40K</p>
+              </div>
+              <button id="resumeButton" class="primary-action">在线简历</button>
+            </div>
+            <div class="message-thread">
+              <p class="message their">你好，我对贵司 AI 招聘工具方向比较感兴趣，之前做过智能客服和知识库产品。</p>
+              <p class="message mine">你好，我先看一下你的项目经历，稍后给你反馈。</p>
+            </div>
+            <div class="resume-sheet" id="resumeSheet">
+              <header>
+                <strong>在线简历</strong>
+                <button id="closeResume" class="subtle-action">关闭</button>
+              </header>
+              <div class="resume-grid">
+                <section>
+                  <h3>最近经历</h3>
+                  <p>负责 AI 知识库产品，从 0 到 1 搭建召回评测、问答质检和客户配置后台。</p>
+                </section>
+                <section>
+                  <h3>能力标签</h3>
+                  <p>LLM 应用、B 端工作流、数据分析、跨团队推进、Prompt 评测</p>
+                </section>
+                <section>
+                  <h3>AI 判断</h3>
+                  <p>匹配必备条件 4/5，建议追问招聘场景理解和项目规模。</p>
+                </section>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <footer class="run-log">
+          <span id="runLog">系统就绪：等待用户选择扫描任务。</span>
+        </footer>
+      </section>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

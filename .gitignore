@@ -1,0 +1,25 @@
+# OS / editor
+.DS_Store
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# Runtime data (local only)
+app_config.json
+boss_workbench.sqlite3
+logs/
+web_profile/
+candidate_profiles/
+
+# Build artifacts
+build/
+dist/
+release/
+*.spec.bak
+
+# Misc
+*.log
