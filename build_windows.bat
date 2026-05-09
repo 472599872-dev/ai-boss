@@ -31,6 +31,7 @@ echo [3/6] Clean old build...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 del /q "AI招聘工作台.spec" 2>nul
+del /q "AIBossWorkbench.spec" 2>nul
 
 echo [4/6] Build exe/app folder...
 set ADD_DATA_ARGS=--add-data "app_version.txt;."
@@ -40,13 +41,13 @@ if exist app_config.json (
 ) else (
   echo app_config.json not found. Installer will fall back to default empty config.
 )
-call .venv\Scripts\pyinstaller.exe --noconfirm --windowed --name "AI招聘工作台" !ADD_DATA_ARGS! main.py
+call .venv\Scripts\pyinstaller.exe --noconfirm --windowed --name "AIBossWorkbench" !ADD_DATA_ARGS! main.py
 if errorlevel 1 goto :err
 
 echo [5/6] Zip distribution...
 if not exist release mkdir release
 set ZIP_PATH=release\AIBossWorkbench-Windows-v%APP_VERSION%.zip
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Force -Path 'dist\AI招聘工作台\*' -DestinationPath '%ZIP_PATH%'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Force -Path 'dist\AIBossWorkbench\*' -DestinationPath '%ZIP_PATH%'"
 if errorlevel 1 goto :err
 
 echo [6/6] Build installer if Inno Setup is available...
@@ -65,7 +66,7 @@ if defined ISCC_EXE (
 echo.
 echo Build done:
 echo   - Version      : %APP_VERSION%
-echo   - EXE folder   : dist\AI招聘工作台\
+echo   - EXE folder   : dist\AIBossWorkbench\
 echo   - ZIP file     : %ZIP_PATH%
 if defined ISCC_EXE (
   echo   - Installer    : release\AIBossWorkbench-Windows-Installer-v%APP_VERSION%.exe

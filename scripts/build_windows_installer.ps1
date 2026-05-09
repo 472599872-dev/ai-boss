@@ -90,7 +90,7 @@ $pyinstallerArgs = @(
     "-m", "PyInstaller",
     "--noconfirm",
     "--windowed",
-    "--name", "AI招聘工作台",
+    "--name", "AIBossWorkbench",
     "--add-data", "app_version.txt;."
 )
 if (Test-Path "app_config.json") {
@@ -102,9 +102,9 @@ if (Test-Path "app_config.json") {
 $pyinstallerArgs += "main.py"
 & $python @pyinstallerArgs
 
-$distDir = Join-Path $root "dist\AI招聘工作台"
+$distDir = Join-Path $root "dist\AIBossWorkbench"
 if (-not (Test-Path $distDir)) {
-    throw "未生成 dist\AI招聘工作台 目录。"
+    throw "未生成 dist\AIBossWorkbench 目录。"
 }
 
 Write-Step "生成 ZIP"
