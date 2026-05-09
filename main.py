@@ -20,6 +20,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -109,6 +110,31 @@ def find_packaged_resource(name: str) -> Path | None:
         path = root / name
         if path.exists():
             return path
+    return None
+
+
+def resolve_existing_path(value: str) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    expanded = Path(raw).expanduser()
+    candidates = [expanded]
+    if not expanded.is_absolute():
+        candidates.extend([ROOT / expanded, APP_DATA_DIR / expanded])
+        packaged = find_packaged_resource(raw)
+        if packaged is not None:
+            candidates.append(packaged)
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.exists() and resolved.is_file():
+            return resolved
     return None
 
 
@@ -278,6 +304,7 @@ DEFAULT_FEISHU_FIELD_MAPPING = {
 DEFAULT_FEISHU_SETTINGS = {
     "feishu_app_id": "",
     "feishu_app_secret": "",
+    "feishu_ca_bundle_path": "",
     "feishu_auth_url": "https://accounts.feishu.cn/open-apis/authen/v1/index",
     "feishu_app_token_url": "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal",
     "feishu_user_token_url": "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token",
@@ -295,6 +322,7 @@ DEFAULT_FEISHU_SETTINGS = {
 DEFAULT_APP_CONFIG = {
     "feishu_app_id": "",
     "feishu_app_secret": "",
+    "feishu_ca_bundle_path": "",
     "feishu_auth_url": "https://accounts.feishu.cn/open-apis/authen/v1/index",
     "feishu_app_token_url": "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal",
     "feishu_user_token_url": "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token",
@@ -1798,6 +1826,40 @@ class FeishuClient:
     def daily_limit(self) -> int:
         return safe_int(self.setting("feishu_usage_daily_limit"), 0)
 
+    def custom_ca_bundle_path(self) -> Path | None:
+        return resolve_existing_path(self.setting("feishu_ca_bundle_path"))
+
+    def system_ca_bundle_path(self) -> Path | None:
+        verify_paths = ssl.get_default_verify_paths()
+        candidates: list[str] = []
+        if verify_paths.cafile:
+            candidates.append(verify_paths.cafile)
+        if sys.platform == "darwin":
+            candidates.extend(
+                [
+                    "/private/etc/ssl/cert.pem",
+                    "/etc/ssl/cert.pem",
+                ]
+            )
+        for raw in candidates:
+            path = resolve_existing_path(raw)
+            if path is not None:
+                return path
+        return None
+
+    def _build_ssl_context(self) -> tuple[ssl.SSLContext, Path | None, Path | None]:
+        system_bundle = self.system_ca_bundle_path()
+        custom_bundle = self.custom_ca_bundle_path()
+        context = ssl.create_default_context(cafile=str(system_bundle) if system_bundle else None)
+        if custom_bundle is not None:
+            try:
+                context.load_verify_locations(cafile=str(custom_bundle))
+            except ssl.SSLError as exc:
+                raise IntegrationError(f"飞书自定义证书无效：{custom_bundle}") from exc
+            except OSError as exc:
+                raise IntegrationError(f"无法读取飞书自定义证书：{custom_bundle}") from exc
+        return context, system_bundle, custom_bundle
+
     def build_authorize_url(self, state: str) -> str:
         app_id = self.setting("feishu_app_id")
         redirect_uri = self.oauth_redirect_uri()
@@ -1842,6 +1904,22 @@ class FeishuClient:
             "payload_keys": sorted([str(key) for key in (payload or {}).keys()])[:20],
             "has_authorization_header": bool(headers and headers.get("Authorization")),
         }
+        ssl_context = None
+        try:
+            ssl_context, system_bundle, custom_bundle = self._build_ssl_context()
+        except IntegrationError as exc:
+            self._trace(
+                "feishu_http_request_error",
+                {
+                    **request_info,
+                    "elapsed_ms": int((time.perf_counter() - timer_started) * 1000),
+                    "error_type": exc.__class__.__name__,
+                    "error": str(exc)[:300],
+                },
+            )
+            raise
+        request_info["ssl_system_bundle"] = str(system_bundle) if system_bundle else ""
+        request_info["ssl_custom_bundle"] = str(custom_bundle) if custom_bundle else ""
         self._trace("feishu_http_request_start", request_info)
         body = None
         final_headers = {"Accept": "application/json"}
@@ -1852,7 +1930,7 @@ class FeishuClient:
             final_headers.setdefault("Content-Type", "application/json")
         req = urllib.request.Request(url, data=body, headers=final_headers, method=method.upper())
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as resp:
                 raw = resp.read().decode("utf-8", errors="ignore")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
