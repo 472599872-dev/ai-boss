@@ -425,6 +425,22 @@ class CandidateEvaluation:
     usage: LLMUsage | None = None
     provider: str = "rule"
     limit_reason: str = ""
+    failure_reason: str = ""
+
+
+@dataclass
+class CandidateSeed:
+    name: str
+    role: str
+    years: str
+    city: str
+    source: str
+    list_index: int
+    read_state: str
+    resume_state: str
+    boss_data_id: str = ""
+    boss_friend_id: str = ""
+    combined_text: str = ""
 
 
 @dataclass
@@ -446,6 +462,14 @@ class UpdateBridge(QObject):
 
 
 class LoginBridge(QObject):
+    finished = Signal(object, object, object)
+
+
+class ScoreBridge(QObject):
+    finished = Signal(int, object)
+
+
+class UsageSyncBridge(QObject):
     finished = Signal(object, object, object)
 
 
@@ -674,6 +698,28 @@ class Repository:
             ),
         )
         self.conn.commit()
+
+    def create_job(self, job: JobConfig) -> int:
+        cursor = self.conn.execute(
+            """
+            insert into jobs
+            (name, city, salary, experience, must_have, nice_to_have, exclusions, resume_dir, default_template)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job.name,
+                job.city,
+                job.salary,
+                job.experience,
+                job.must_have,
+                job.nice_to_have,
+                job.exclusions,
+                job.resume_dir,
+                job.default_template,
+            ),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
 
     def upsert_candidate(self, job_id: int, candidate: Candidate) -> bool:
         fingerprint = "|".join(
@@ -2543,7 +2589,36 @@ class UsageManager:
             usage_date=usage_date,
         )
 
-    def record_usage(
+    def check_budget_cached(self, session: FeishuSession, request_text: str) -> UsageGateResult:
+        usage_date = today_text()
+        estimated_tokens = self.estimate_tokens(request_text)
+        local_total = self.repo.ai_usage_total_summary(session.open_id)
+        remote = self._cached_remote_quota(session, force_refresh=False) if self.feishu.cloud_sync_ready() else None
+        used_tokens = safe_int(local_total.get("total_tokens"))
+        limit_tokens = safe_int(getattr(remote, "recharge_tokens", 0))
+        if remote is not None:
+            used_tokens = max(
+                used_tokens,
+                safe_int(remote.used_tokens),
+                safe_int(remote.total_tokens),
+            )
+        remaining_tokens = max(0, limit_tokens - used_tokens) if limit_tokens > 0 else 0
+        allowed = True
+        reason = ""
+        if remote is not None and limit_tokens > 0 and used_tokens + estimated_tokens > limit_tokens:
+            allowed = False
+            reason = f"token已经消耗完，请联系管理员进行充值。当前已用 {used_tokens}，已充值 {limit_tokens}。"
+        return UsageGateResult(
+            allowed=allowed,
+            estimated_tokens=estimated_tokens,
+            used_tokens=used_tokens,
+            limit_tokens=limit_tokens,
+            remaining_tokens=remaining_tokens,
+            reason=reason,
+            usage_date=usage_date,
+        )
+
+    def record_usage_local(
         self,
         session: FeishuSession,
         usage: LLMUsage,
@@ -2562,15 +2637,33 @@ class UsageManager:
         )
         total_summary = self.repo.ai_usage_total_summary(session.open_id)
         total_summary["usage_date"] = usage_date
+        return {"summary": total_summary, "remote": None, "sync_error": ""}
+
+    def sync_remote_usage(
+        self,
+        session: FeishuSession,
+        total_summary: dict[str, Any],
+        latest_usage: LLMUsage | None = None,
+    ) -> dict[str, Any]:
         remote = None
         sync_error = ""
         if self.feishu.cloud_sync_ready():
             try:
-                remote = self.feishu.sync_user_quota_usage(session, total_summary, latest_usage=usage)
+                remote = self.feishu.sync_user_quota_usage(session, total_summary, latest_usage=latest_usage)
                 self._remote_cache[session.open_id] = (time.time(), remote)
             except IntegrationError as exc:
                 sync_error = str(exc)
         return {"summary": total_summary, "remote": remote, "sync_error": sync_error}
+
+    def record_usage(
+        self,
+        session: FeishuSession,
+        usage: LLMUsage,
+        source: str,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        result = self.record_usage_local(session, usage, source, meta=meta)
+        return self.sync_remote_usage(session, result["summary"], latest_usage=usage)
 
     def usage_summary(self, session: FeishuSession) -> dict[str, Any]:
         usage_date = today_text()
@@ -2632,16 +2725,29 @@ class CandidateExtractor:
         payload: dict[str, Any],
         usage_manager: UsageManager | None = None,
         session: FeishuSession | None = None,
-    ) -> CandidateEvaluation:
+        ) -> CandidateEvaluation:
+        seed = CandidateExtractor.seed_from_page_payload(job, source, index, payload)
+        if seed is None:
+            return CandidateEvaluation(candidate=None)
+        llm_result = CandidateExtractor.score_by_dify_chat(job, seed.combined_text, seed.city, usage_manager, session)
+        return CandidateExtractor.evaluation_from_seed(job, seed, llm_result)
+
+    @staticmethod
+    def seed_from_page_payload(
+        job: JobConfig,
+        source: str,
+        index: int,
+        payload: dict[str, Any],
+    ) -> CandidateSeed | None:
         clicked_text = CandidateExtractor.clean_text(str(payload.get("clickedText") or ""))
         detail_text = CandidateExtractor.clean_text(str(payload.get("detailText") or ""))
         score_reference_text = CandidateExtractor.clean_text(str(payload.get("scoreReferenceText") or ""))
         page_text = CandidateExtractor.clean_text(str(payload.get("pageText") or ""))
         combined = score_reference_text or detail_text or page_text or clicked_text
         if not combined or len(combined) < 12:
-            return CandidateEvaluation(candidate=None)
+            return None
         if "验证码登录/注册" in combined and "候选人" not in combined and "牛人" not in combined:
-            return CandidateEvaluation(candidate=None)
+            return None
 
         name = str(payload.get("name") or "").strip() or CandidateExtractor.extract_name(clicked_text or detail_text)
         role = str(payload.get("role") or "").strip() or CandidateExtractor.extract_role(combined, job)
@@ -2661,56 +2767,77 @@ class CandidateExtractor:
         boss_friend_id = str(open_request.get("friendId") or payload.get("bossFriendId") or "").strip()
         if not boss_friend_id and boss_data_id:
             boss_friend_id = boss_data_id.split("-", 1)[0]
+        return CandidateSeed(
+            name=name,
+            role=role,
+            years=years,
+            city=city,
+            source=source,
+            list_index=index,
+            read_state=read_state,
+            resume_state=resume_state,
+            boss_data_id=boss_data_id,
+            boss_friend_id=boss_friend_id,
+            combined_text=combined,
+        )
 
-        llm_result = CandidateExtractor.score_by_dify_chat(job, combined, city, usage_manager, session)
-        hits: list[str]
-        misses: list[str]
-        risks: list[str]
-        score: int
-        suggestion = ""
-        usage = llm_result.usage if llm_result else None
-        provider = "rule"
-        limit_reason = llm_result.limit_reason if llm_result else ""
-        if llm_result and not llm_result.limit_reason:
-            hits = ["评分来源：Dify"] + llm_result.hits
-            misses = list(llm_result.misses)
-            risks = list(llm_result.risks)
-            score = llm_result.score
-            suggestion = llm_result.suggestion
-            provider = "dify"
-            if usage:
-                if usage.estimated:
-                    hits.append(f"Token 统计：未返回实际用量，按文本估算约 {usage.total_tokens}")
-                else:
-                    hits.append(
-                        f"Token 统计：prompt {usage.prompt_tokens} / completion {usage.completion_tokens} / total {usage.total_tokens}"
-                    )
-        else:
-            hits, misses, risks, score = CandidateExtractor.score(job, combined, city)
-            if limit_reason:
-                hits = [f"AI 限流：{limit_reason}"] + hits
+    @staticmethod
+    def evaluation_from_seed(
+        job: JobConfig,
+        seed: CandidateSeed,
+        llm_result: DifyScoreResult | None,
+    ) -> CandidateEvaluation:
+        if not llm_result:
+            return CandidateEvaluation(
+                candidate=None,
+                provider="dify",
+                failure_reason="大模型评分未返回有效结果",
+            )
+        if llm_result.limit_reason:
+            return CandidateEvaluation(
+                candidate=None,
+                usage=llm_result.usage,
+                provider="dify",
+                limit_reason=llm_result.limit_reason,
+                failure_reason=f"AI 评分失败：{llm_result.limit_reason}",
+            )
+        hits: list[str] = ["评分来源：Dify"] + llm_result.hits
+        misses: list[str] = list(llm_result.misses)
+        risks: list[str] = list(llm_result.risks)
+        score: int = llm_result.score
+        suggestion = llm_result.suggestion
+        usage = llm_result.usage
+        provider = "dify"
+        limit_reason = ""
+        if usage:
+            if usage.estimated:
+                hits.append(f"Token 统计：未返回实际用量，按文本估算约 {usage.total_tokens}")
+            else:
+                hits.append(
+                    f"Token 统计：prompt {usage.prompt_tokens} / completion {usage.completion_tokens} / total {usage.total_tokens}"
+                )
         status = "contact_ready" if score >= 85 else "review"
         if risks:
             status = "review"
         suggestion = suggestion or CandidateExtractor.suggestion(job, hits, misses, risks)
         return CandidateEvaluation(
             candidate=Candidate(
-                name=name,
-                role=role,
-                years=years,
-                city=city,
+                name=seed.name,
+                role=seed.role,
+                years=seed.years,
+                city=seed.city,
                 score=score,
                 status=status,
-                source=source,
-                list_index=index,
-                read_state=read_state,
-                resume_state=resume_state,
+                source=seed.source,
+                list_index=seed.list_index,
+                read_state=seed.read_state,
+                resume_state=seed.resume_state,
                 hits="；".join(hits) if hits else "暂无明确命中项",
                 misses="；".join(misses) if misses else "暂无明显缺失项",
                 risks="；".join(risks) if risks else "暂无明显风险",
                 suggestion=suggestion,
-                boss_data_id=boss_data_id,
-                boss_friend_id=boss_friend_id,
+                boss_data_id=seed.boss_data_id,
+                boss_friend_id=seed.boss_friend_id,
             ),
             usage=usage,
             provider=provider,
@@ -3266,10 +3393,18 @@ class ScanController:
         self.open_verify_attempts = 0
         self.resume_extract_attempts = 0
         self.read_filter = "全部"
+        self.search_scroll_attempts = 0
+        self.scoring_request_id = 0
+        self.scoring_in_flight = False
+        self.pending_score_job: JobConfig | None = None
+        self.score_bridge = ScoreBridge(app)
+        self.score_bridge.finished.connect(self.on_candidate_scored)
+        self.usage_sync_bridge = UsageSyncBridge(app)
+        self.usage_sync_bridge.finished.connect(self.on_usage_sync_finished)
 
     def start(self, mode: str, indices: list[int], read_filter: str = "全部") -> None:
         if self.active:
-            QMessageBox.information(self.app, "扫描进行中", "当前已有扫描任务，请先停止或等待完成。")
+            self.app.append_log("当前已有扫描任务在执行，请先停止或等待当前任务完成。")
             return
         self.mode = mode
         self.read_filter = read_filter
@@ -3279,6 +3414,7 @@ class ScanController:
         self.failed = 0
         self.stop_requested = False
         self.active = True
+        self.search_scroll_attempts = 0
         self.app.set_scan_state("未请求", "准备中", len(indices))
         if not indices:
             self.app.append_log("没有可执行候选人，扫描未启动。")
@@ -3315,6 +3451,12 @@ class ScanController:
                 self.on_candidate_located,
             )
             return
+        if self.mode == "search":
+            self.app.browser.page().runJavaScript(
+                self.json_script(self.locate_search_candidate_script(index)),
+                self.on_candidate_located,
+            )
+            return
         self.app.browser.page().runJavaScript(
             self.json_script(self.locate_candidate_script(index, self.read_filter)),
             self.on_candidate_located,
@@ -3345,6 +3487,18 @@ class ScanController:
                 self.on_candidate_open_requested,
             )
             return
+        if self.mode == "search":
+            self.app.append_log(f"已定位搜索页第 {self.pending_index} 位；识别到 {found_count} 张候选卡片，准备打开在线简历。")
+            self.app.browser.page().runJavaScript(
+                self.json_script(
+                    self.open_search_candidate_script(
+                        self.pending_index,
+                        str(payload.get("dataId") or ""),
+                    )
+                ),
+                self.on_candidate_open_requested,
+            )
+            return
         self.app.append_log(f"已定位第 {self.pending_index} 位；识别到 {found_count} 个候选人，准备通过 BOSS 列表组件打开。")
         self.app.browser.page().runJavaScript(
             self.json_script(self.open_candidate_script(self.pending_index, str(payload.get("dataId") or ""))),
@@ -3364,6 +3518,11 @@ class ScanController:
             self.app.set_scan_state(None, f"第 {self.current}/{len(self.queue)} 位 · 读取推荐资料", None)
             self.app.append_log("推荐牛人资料已打开/聚焦，准备读取推荐页结构化资料。")
             QTimer.singleShot(1200, self.extract_current_detail)
+            return
+        if self.mode == "search":
+            self.app.set_scan_state(None, f"第 {self.current}/{len(self.queue)} 位 · 读取搜索资料", None)
+            self.app.append_log("搜索页在线简历已打开，准备读取结构化资料。")
+            QTimer.singleShot(1400, self.extract_current_detail)
             return
         QTimer.singleShot(2400, self.verify_candidate_opened)
 
@@ -3412,6 +3571,17 @@ class ScanController:
             self.app.browser.page().runJavaScript(
                 self.json_script(
                     self.extract_recommend_detail_script(
+                        self.pending_index,
+                        str(self.pending_payload.get("dataId") or ""),
+                    )
+                ),
+                self.on_detail_extracted,
+            )
+            return
+        if self.mode == "search":
+            self.app.browser.page().runJavaScript(
+                self.json_script(
+                    self.extract_search_detail_script(
                         self.pending_index,
                         str(self.pending_payload.get("dataId") or ""),
                     )
@@ -3470,17 +3640,14 @@ class ScanController:
             QTimer.singleShot(2600, self.extract_current_detail)
             return
         job = self.app.current_job()
-        source = "投递人选" if self.mode == "inbound" else "主动触达"
-        evaluation = CandidateExtractor.from_page_payload(
-            job,
-            source,
-            self.pending_index,
-            self.pending_payload,
-            usage_manager=self.app.usage_manager,
-            session=self.app.feishu_session,
-        )
-        candidate = evaluation.candidate
-        if candidate is None:
+        if self.mode == "inbound":
+            source = "投递人选"
+        elif self.mode == "outbound":
+            source = "主动触达"
+        else:
+            source = "搜索找人"
+        seed = CandidateExtractor.seed_from_page_payload(job, source, self.pending_index, self.pending_payload)
+        if seed is None:
             self.failed += 1
             self.app.repo.log(
                 job.id,
@@ -3491,10 +3658,80 @@ class ScanController:
             self.app.append_log(f"第 {self.pending_index} 位未提取到有效候选人信息，未写入候选人池。")
             self.after_current_item()
             return
-        if evaluation.limit_reason:
-            self.app.append_log(f"AI 用量限制生效：{evaluation.limit_reason} 已自动切换为本地规则评分。")
-            self.app.repo.log(job.id, candidate.name, "ai_limit_fallback", evaluation.limit_reason)
-            self.app.notify_usage_blocked(evaluation.limit_reason)
+        session = self.app.feishu_session
+        if session:
+            gate = self.app.usage_manager.check_budget_cached(session, seed.combined_text)
+            if not gate.allowed:
+                self.failed += 1
+                self.app.repo.log(
+                    job.id,
+                    seed.name or None,
+                    "score_failed",
+                    f"{self.mode_label()} 第 {self.pending_index} 位评分失败：{gate.reason}",
+                )
+                self.app.append_log(f"第 {self.pending_index} 位评分失败：{gate.reason}，跳过当前候选人。")
+                self.after_current_item()
+                return
+        self.start_async_scoring(job, seed)
+        return
+
+    def start_async_scoring(self, job: JobConfig, seed: CandidateSeed) -> None:
+        self.scoring_request_id += 1
+        request_id = self.scoring_request_id
+        self.scoring_in_flight = True
+        self.pending_score_job = job
+        candidate_name = seed.name or f"第 {self.pending_index} 位候选人"
+        self.app.set_scan_state(
+            "已请求" if self.stop_requested else "未请求",
+            f"第 {self.current}/{len(self.queue)} 位 · AI评分中",
+            len(self.queue),
+        )
+        self.app.append_log(f"正在对 {candidate_name} 进行 AI 评分。")
+
+        def worker() -> None:
+            evaluation = CandidateExtractor.evaluation_from_seed(
+                job,
+                seed,
+                CandidateExtractor.score_by_dify_chat(job, seed.combined_text, seed.city),
+            )
+            self.score_bridge.finished.emit(request_id, evaluation)
+
+        threading.Thread(target=worker, name=f"candidate-score-{request_id}", daemon=True).start()
+
+    def on_candidate_scored(self, request_id: int, evaluation: Any) -> None:
+        if request_id != self.scoring_request_id:
+            return
+        self.scoring_in_flight = False
+        job = self.pending_score_job or self.app.current_job()
+        if self.mode == "inbound":
+            source = "投递人选"
+        elif self.mode == "outbound":
+            source = "主动触达"
+        else:
+            source = "搜索找人"
+        candidate = evaluation.candidate
+        if candidate is None:
+            self.failed += 1
+            failure_reason = str(evaluation.failure_reason or "").strip()
+            if failure_reason:
+                self.app.repo.log(
+                    job.id,
+                    None,
+                    "score_failed",
+                    f"{self.mode_label()} 第 {self.pending_index} 位评分失败：{failure_reason}",
+                )
+                self.app.append_log(f"第 {self.pending_index} 位评分失败：{failure_reason}，跳过当前候选人。")
+                self.after_current_item()
+                return
+            self.app.repo.log(
+                job.id,
+                None,
+                "scan_failed",
+                f"{self.mode_label()} 第 {self.pending_index} 位未能从页面提取候选人信息",
+            )
+            self.app.append_log(f"第 {self.pending_index} 位未提取到有效候选人信息，未写入候选人池。")
+            self.after_current_item()
+            return
         if evaluation.usage:
             self.app.write_scan_log(
                 "ai_usage",
@@ -3509,7 +3746,19 @@ class ScanController:
                     "estimated": evaluation.usage.estimated,
                 },
             )
-            self.app.refresh_usage_summary()
+            if self.app.feishu_session:
+                usage_result = self.app.usage_manager.record_usage_local(
+                    self.app.feishu_session,
+                    evaluation.usage,
+                    source="candidate_screening",
+                    meta={
+                        "job_name": job.name,
+                        "candidate_city": candidate.city,
+                        "score": candidate.score,
+                    },
+                )
+                self.app.refresh_usage_summary()
+                self.start_async_usage_sync(self.app.feishu_session, usage_result["summary"], evaluation.usage)
         profile_path = self.save_candidate_profile(job, source, candidate, self.pending_payload)
         if profile_path:
             self.app.write_scan_log("candidate_profile_saved", {"name": candidate.name, "path": str(profile_path)})
@@ -3558,7 +3807,23 @@ class ScanController:
             self.app.append_log(f"自动打招呼未触发：{candidate.name} 评分 {candidate.score} 未达到阈值 {threshold}。")
             self.close_recommend_resume_then_continue()
             return
+        if self.mode == "search":
+            self.close_search_resume_then_continue()
+            return
         self.close_inbound_resume_then_continue()
+
+    def start_async_usage_sync(self, session: FeishuSession, total_summary: dict[str, Any], usage: LLMUsage) -> None:
+        def worker() -> None:
+            result = self.app.usage_manager.sync_remote_usage(session, total_summary, latest_usage=usage)
+            self.usage_sync_bridge.finished.emit(session.open_id, result.get("remote"), result.get("sync_error"))
+
+        threading.Thread(target=worker, name=f"usage-sync-{session.open_id[-6:]}", daemon=True).start()
+
+    def on_usage_sync_finished(self, open_id: Any, remote: Any, sync_error: Any) -> None:
+        if self.app.feishu_session and str(open_id or "") == self.app.feishu_session.open_id and remote:
+            self.app.refresh_usage_summary()
+        elif sync_error:
+            self.app.append_log(f"飞书额度回写失败：{sync_error}")
 
     def close_inbound_resume_then_continue(self) -> None:
         if self.mode != "inbound":
@@ -3588,6 +3853,21 @@ class ScanController:
         payload = self.parse_js_payload(result)
         self.pending_payload.update({"recommendResumeClose": payload})
         self.app.write_scan_log("recommend_resume_close", payload)
+        self.after_current_item()
+
+    def close_search_resume_then_continue(self) -> None:
+        if self.mode != "search":
+            self.after_current_item()
+            return
+        self.app.browser.page().runJavaScript(
+            self.json_script(self.close_search_resume_script()),
+            self.on_search_resume_closed,
+        )
+
+    def on_search_resume_closed(self, result: Any) -> None:
+        payload = self.parse_js_payload(result)
+        self.pending_payload.update({"searchResumeClose": payload})
+        self.app.write_scan_log("search_resume_close", payload)
         self.after_current_item()
 
     def on_recommend_resume_closed_before_hello(self, result: Any, candidate: Candidate, threshold: int) -> None:
@@ -4193,6 +4473,1128 @@ class ScanController:
             return { ok: false, reason: 'script-error', error: String(error && error.stack || error), url: location.href };
           }
         })();
+        """
+
+    def search_candidate_count_script(self) -> str:
+        return """
+        (() => {
+          try {
+            const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+            const visible = (el) => {
+              const rect = el.getBoundingClientRect();
+              const style = el.ownerDocument.defaultView.getComputedStyle(el);
+              return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none';
+            };
+            const searchSelectors = [
+              '.card-list li.geek-info-card',
+              'li.geek-info-card',
+              '.candidate-card-wrap',
+              '[class*="candidate-card"]',
+              '[class*="geek-card"]',
+              '[class*="geek-info-card"]'
+            ];
+            const readySelectors = [
+              '.card-list li.geek-info-card',
+              'li.geek-info-card',
+              '.candidate-card-wrap',
+              '.searchContent a[href*="/geek/"]',
+              '.card-list .item-operate .btn-getcontact'
+            ];
+            const searchDoc = () => {
+              if (readySelectors.some((selector) => document.querySelector(selector))) return document;
+              for (const frame of [...document.querySelectorAll('iframe')]) {
+                try {
+                  const doc = frame.contentDocument;
+                  if (doc && readySelectors.some((selector) => doc.querySelector(selector))) return doc;
+                } catch (_) {}
+              }
+              return null;
+            };
+            const geekFromCard = (card) => {
+              const vm = card && card.__vue__;
+              const directRaw = vm && vm.$props && (vm.$props.geekInfo || vm.$props.geek || vm.$props.candidate || vm.$props.item || vm.$props.data || vm.$props.cardData) || null;
+              const direct = directRaw && directRaw.geekInfo && typeof directRaw.geekInfo === 'object' ? directRaw.geekInfo : directRaw;
+              if (direct && (direct.encryptGeekId || direct.encGeekId || direct.geekName || direct.name || direct.securityId)) return direct;
+              const child = vm && Array.isArray(vm.$children)
+                ? vm.$children.find((item) => item && item.$props && (item.$props.geekInfo || item.$props.geek || item.$props.candidate || item.$props.item || item.$props.data))
+                : null;
+              const childRaw = child && child.$props && (child.$props.geekInfo || child.$props.geek || child.$props.candidate || child.$props.item || child.$props.data) || null;
+              const childGeek = childRaw && childRaw.geekInfo && typeof childRaw.geekInfo === 'object' ? childRaw.geekInfo : childRaw;
+              return childGeek || {};
+            };
+            const cardsOf = (doc) => {
+              for (const selector of searchSelectors) {
+                const nodes = [...doc.querySelectorAll(selector)].filter(visible);
+                if (nodes.length) return nodes;
+              }
+              return [];
+            };
+            const scrollParentOf = (node, doc) => {
+              let current = node && node.parentElement;
+              while (current && current !== doc.body) {
+                try {
+                  const style = current.ownerDocument.defaultView.getComputedStyle(current);
+                  const overflowY = `${style.overflowY} ${style.overflow}`.toLowerCase();
+                  if (current.scrollHeight > current.clientHeight + 20 && /(auto|scroll|overlay)/.test(overflowY)) {
+                    return current;
+                  }
+                } catch (_) {}
+                current = current.parentElement;
+              }
+              return doc.scrollingElement || doc.documentElement || doc.body;
+            };
+            const doc = searchDoc();
+            if (!doc) {
+              return { ok: false, reason: 'search-frame-not-ready', url: location.href, title: document.title };
+            }
+            const cards = cardsOf(doc);
+            const firstCard = cards[0] || null;
+            const scroller = firstCard ? scrollParentOf(firstCard, doc) : (doc.scrollingElement || doc.documentElement || doc.body);
+            const scrollTop = Number(scroller && scroller.scrollTop || 0);
+            const scrollHeight = Number(scroller && scroller.scrollHeight || 0);
+            const clientHeight = Number(scroller && scroller.clientHeight || 0);
+            const canScroll = scrollHeight > clientHeight + 20 && scrollTop + clientHeight < scrollHeight - 8;
+            return {
+              ok: true,
+              source: 'search',
+              listCount: cards.length,
+              rawListCount: cards.length,
+              canScroll,
+              scrollTop,
+              scrollHeight,
+              clientHeight,
+              url: doc.location ? doc.location.href : location.href,
+              candidates: cards.slice(0, 20).map((card, i) => {
+                const geek = geekFromCard(card);
+                return {
+                  i: i + 1,
+                  name: clean(geek.geekName || geek.name || ''),
+                  role: clean(geek.expectPositionName || geek.positionName || geek.position || ''),
+                  dataId: String(geek.encryptGeekId || geek.encGeekId || geek.uniqueId || ''),
+                  text: clean(card.innerText || card.textContent || '').slice(0, 320)
+                };
+              })
+            };
+          } catch (error) {
+            return { ok: false, reason: 'script-error', error: String(error && error.stack || error), url: location.href };
+          }
+        })();
+        """
+
+    def scroll_search_results_script(self) -> str:
+        return """
+        (() => {
+          try {
+            const visible = (el) => {
+              const rect = el.getBoundingClientRect();
+              const style = el.ownerDocument.defaultView.getComputedStyle(el);
+              return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none';
+            };
+            const searchSelectors = [
+              '.card-list li.geek-info-card',
+              'li.geek-info-card',
+              '.candidate-card-wrap',
+              '[class*="candidate-card"]',
+              '[class*="geek-card"]',
+              '[class*="geek-info-card"]'
+            ];
+            const readySelectors = [
+              '.card-list li.geek-info-card',
+              'li.geek-info-card',
+              '.candidate-card-wrap',
+              '.searchContent a[href*="/geek/"]',
+              '.card-list .item-operate .btn-getcontact'
+            ];
+            const searchDoc = () => {
+              if (readySelectors.some((selector) => document.querySelector(selector))) return document;
+              for (const frame of [...document.querySelectorAll('iframe')]) {
+                try {
+                  const doc = frame.contentDocument;
+                  if (doc && readySelectors.some((selector) => doc.querySelector(selector))) return doc;
+                } catch (_) {}
+              }
+              return null;
+            };
+            const cardsOf = (doc) => {
+              for (const selector of searchSelectors) {
+                const nodes = [...doc.querySelectorAll(selector)].filter(visible);
+                if (nodes.length) return nodes;
+              }
+              return [];
+            };
+            const scrollParentOf = (node, doc) => {
+              let current = node && node.parentElement;
+              while (current && current !== doc.body) {
+                try {
+                  const style = current.ownerDocument.defaultView.getComputedStyle(current);
+                  const overflowY = `${style.overflowY} ${style.overflow}`.toLowerCase();
+                  if (current.scrollHeight > current.clientHeight + 20 && /(auto|scroll|overlay)/.test(overflowY)) {
+                    return current;
+                  }
+                } catch (_) {}
+                current = current.parentElement;
+              }
+              return doc.scrollingElement || doc.documentElement || doc.body;
+            };
+            const doc = searchDoc();
+            if (!doc) return { ok: false, reason: 'search-frame-not-ready', url: location.href };
+            const cards = cardsOf(doc);
+            const firstCard = cards[0] || null;
+            const scroller = firstCard ? scrollParentOf(firstCard, doc) : (doc.scrollingElement || doc.documentElement || doc.body);
+            if (!scroller) return { ok: false, reason: 'search-scroll-container-not-found', url: doc.location ? doc.location.href : location.href };
+            const before = Number(scroller.scrollTop || 0);
+            const step = Math.max(360, Math.round((Number(scroller.clientHeight || 0) || 0) * 0.85));
+            scroller.scrollTop = before + step;
+            scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+            doc.dispatchEvent(new Event('scroll', { bubbles: true }));
+            return {
+              ok: true,
+              before,
+              after: Number(scroller.scrollTop || 0),
+              step,
+              clientHeight: Number(scroller.clientHeight || 0),
+              scrollHeight: Number(scroller.scrollHeight || 0),
+              url: doc.location ? doc.location.href : location.href
+            };
+          } catch (error) {
+            return { ok: false, reason: 'script-error', error: String(error && error.stack || error), url: location.href };
+          }
+        })();
+        """
+
+    def locate_search_candidate_script(self, index: int) -> str:
+        target_index = max(0, index - 1)
+        script = """
+        (() => {
+          try {
+            const targetIndex = __TARGET_INDEX__;
+            const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+            const visible = (el) => {
+              const rect = el.getBoundingClientRect();
+              const style = el.ownerDocument.defaultView.getComputedStyle(el);
+              return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none';
+            };
+            const searchSelectors = [
+              '.card-list li.geek-info-card',
+              'li.geek-info-card',
+              '.candidate-card-wrap',
+              '[class*="candidate-card"]',
+              '[class*="geek-card"]',
+              '[class*="geek-info-card"]'
+            ];
+            const readySelectors = [
+              '.card-list li.geek-info-card',
+              'li.geek-info-card',
+              '.candidate-card-wrap',
+              '.searchContent a[href*="/geek/"]',
+              '.card-list .item-operate .btn-getcontact'
+            ];
+            const searchDoc = () => {
+              if (readySelectors.some((selector) => document.querySelector(selector))) return document;
+              for (const frame of [...document.querySelectorAll('iframe')]) {
+                try {
+                  const doc = frame.contentDocument;
+                  if (doc && readySelectors.some((selector) => doc.querySelector(selector))) return doc;
+                } catch (_) {}
+              }
+              return null;
+            };
+            const geekFromCard = (card) => {
+              const vm = card && card.__vue__;
+              const directRaw = vm && vm.$props && (vm.$props.geekInfo || vm.$props.geek || vm.$props.candidate || vm.$props.item || vm.$props.data || vm.$props.cardData) || null;
+              const direct = directRaw && directRaw.geekInfo && typeof directRaw.geekInfo === 'object' ? directRaw.geekInfo : directRaw;
+              if (direct && (direct.encryptGeekId || direct.encGeekId || direct.geekName || direct.name || direct.securityId)) return direct;
+              const child = vm && Array.isArray(vm.$children)
+                ? vm.$children.find((item) => item && item.$props && (item.$props.geekInfo || item.$props.geek || item.$props.candidate || item.$props.item || item.$props.data))
+                : null;
+              const childRaw = child && child.$props && (child.$props.geekInfo || child.$props.geek || child.$props.candidate || child.$props.item || child.$props.data) || null;
+              const childGeek = childRaw && childRaw.geekInfo && typeof childRaw.geekInfo === 'object' ? childRaw.geekInfo : childRaw;
+              return childGeek || {};
+            };
+            const cardsOf = (doc) => {
+              for (const selector of searchSelectors) {
+                const nodes = [...doc.querySelectorAll(selector)].filter(visible);
+                if (nodes.length) return nodes;
+              }
+              return [];
+            };
+            const doc = searchDoc();
+            if (!doc) return { ok: false, reason: 'search-frame-not-ready', url: location.href };
+            const cards = cardsOf(doc);
+            const target = cards[targetIndex];
+            const describe = (card, i) => {
+              const geek = geekFromCard(card);
+              const rect = card.getBoundingClientRect();
+              return {
+                i: i + 1,
+                top: Math.round(rect.top),
+                left: Math.round(rect.left),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+                name: clean(geek.geekName || geek.name || ''),
+                role: clean(geek.expectPositionName || geek.positionName || geek.position || ''),
+                dataId: String(geek.encryptGeekId || geek.encGeekId || geek.uniqueId || ''),
+                text: clean(card.innerText || card.textContent || '').slice(0, 360)
+              };
+            };
+            if (!target) {
+              return {
+                ok: false,
+                reason: 'search-card-not-found',
+                listCount: cards.length,
+                targetIndex: targetIndex + 1,
+                candidates: cards.slice(0, 20).map(describe),
+                url: doc.location ? doc.location.href : location.href
+              };
+            }
+            target.scrollIntoView({ block: 'center', inline: 'nearest' });
+            const geek = geekFromCard(target);
+            const dataId = String(geek.encryptGeekId || geek.encGeekId || geek.uniqueId || '');
+            if (dataId && doc.defaultView) {
+              doc.defaultView.__bossWorkbenchSearchCache = doc.defaultView.__bossWorkbenchSearchCache || {};
+              doc.defaultView.__bossWorkbenchSearchCache[dataId] = {
+                geek,
+                cardText: clean(target.innerText || target.textContent || '')
+              };
+            }
+            const rect = target.getBoundingClientRect();
+            return {
+              ok: true,
+              source: 'search',
+              listCount: cards.length,
+              targetIndex: targetIndex + 1,
+              targetRect: {
+                top: Math.round(rect.top),
+                left: Math.round(rect.left),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height)
+              },
+              name: clean(geek.geekName || geek.name || ''),
+              role: clean(geek.expectPositionName || geek.positionName || geek.position || ''),
+              dataId,
+              bossFriendId: String(geek.geekId || geek.friendId || geek.uid || ''),
+              securityId: String(geek.securityId || ''),
+              clickedText: clean(target.innerText || target.textContent || '').slice(0, 2500),
+              url: doc.location ? doc.location.href : location.href
+            };
+          } catch (error) {
+            return { ok: false, reason: 'script-error', error: String(error && error.stack || error), url: location.href };
+          }
+        })();
+        """
+        return script.replace("__TARGET_INDEX__", str(target_index))
+
+    def open_search_candidate_script(self, index: int, expected_data_id: str) -> str:
+        target_index = max(0, index - 1)
+        expected = json.dumps(expected_data_id)
+        script = """
+        (() => {
+          try {
+            const targetIndex = __TARGET_INDEX__;
+            const expectedDataId = __EXPECTED_DATA_ID__;
+            const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+            const visible = (el) => {
+              const rect = el.getBoundingClientRect();
+              const style = el.ownerDocument.defaultView.getComputedStyle(el);
+              return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none';
+            };
+            const searchSelectors = [
+              '.card-list li.geek-info-card',
+              'li.geek-info-card',
+              '.candidate-card-wrap',
+              '[class*="candidate-card"]',
+              '[class*="geek-card"]',
+              '[class*="geek-info-card"]'
+            ];
+            const readySelectors = [
+              '.card-list li.geek-info-card',
+              'li.geek-info-card',
+              '.candidate-card-wrap',
+              '.searchContent a[href*="/geek/"]',
+              '.card-list .item-operate .btn-getcontact'
+            ];
+            const searchDoc = () => {
+              if (readySelectors.some((selector) => document.querySelector(selector))) return document;
+              for (const frame of [...document.querySelectorAll('iframe')]) {
+                try {
+                  const doc = frame.contentDocument;
+                  if (doc && readySelectors.some((selector) => doc.querySelector(selector))) return doc;
+                } catch (_) {}
+              }
+              return null;
+            };
+            const geekFromCard = (card) => {
+              const vm = card && card.__vue__;
+              const directRaw = vm && vm.$props && (vm.$props.geekInfo || vm.$props.geek || vm.$props.candidate || vm.$props.item || vm.$props.data || vm.$props.cardData) || null;
+              const direct = directRaw && directRaw.geekInfo && typeof directRaw.geekInfo === 'object' ? directRaw.geekInfo : directRaw;
+              if (direct && (direct.encryptGeekId || direct.encGeekId || direct.geekName || direct.name || direct.securityId)) return direct;
+              const child = vm && Array.isArray(vm.$children)
+                ? vm.$children.find((item) => item && item.$props && (item.$props.geekInfo || item.$props.geek || item.$props.candidate || item.$props.item || item.$props.data))
+                : null;
+              const childRaw = child && child.$props && (child.$props.geekInfo || child.$props.geek || child.$props.candidate || child.$props.item || child.$props.data) || null;
+              const childGeek = childRaw && childRaw.geekInfo && typeof childRaw.geekInfo === 'object' ? childRaw.geekInfo : childRaw;
+              return childGeek || {};
+            };
+            const cardsOf = (doc) => {
+              for (const selector of searchSelectors) {
+                const nodes = [...doc.querySelectorAll(selector)].filter(visible);
+                if (nodes.length) return nodes;
+              }
+              return [];
+            };
+            const doc = searchDoc();
+            if (!doc) return { ok: false, reason: 'search-frame-not-ready', url: location.href };
+            const cards = cardsOf(doc);
+            let target = cards[targetIndex];
+            let resolvedIndex = targetIndex;
+            if (expectedDataId) {
+              const found = cards.findIndex((card) => {
+                const geek = geekFromCard(card);
+                return String(geek.encryptGeekId || geek.encGeekId || geek.uniqueId || '') === expectedDataId;
+              });
+              if (found >= 0) {
+                target = cards[found];
+                resolvedIndex = found;
+              }
+            }
+            if (!target) {
+              return { ok: false, reason: 'search-card-not-found', targetIndex: targetIndex + 1, listCount: cards.length, url: doc.location ? doc.location.href : location.href };
+            }
+            target.scrollIntoView({ block: 'center', inline: 'nearest' });
+            const geek = geekFromCard(target);
+            const dataId = String(geek.encryptGeekId || geek.encGeekId || geek.uniqueId || '');
+            if (dataId && doc.defaultView) {
+              doc.defaultView.__bossWorkbenchSearchCache = doc.defaultView.__bossWorkbenchSearchCache || {};
+              doc.defaultView.__bossWorkbenchSearchCache[dataId] = {
+                geek,
+                cardText: clean(target.innerText || target.textContent || '')
+              };
+            }
+            const vmCandidates = [
+              target.__vue__,
+              target.parentElement && target.parentElement.__vue__,
+              doc.querySelector('.card-list') && doc.querySelector('.card-list').__vue__,
+              doc.querySelector('.searchContent') && doc.querySelector('.searchContent').__vue__
+            ].filter(Boolean);
+            let method = '';
+            let invokeError = '';
+            for (const vm of vmCandidates) {
+              try {
+                if (vm && typeof vm.showResume === 'function') {
+                  vm.showResume(geek, resolvedIndex);
+                  method = 'vue.showResume';
+                  break;
+                }
+                if (vm && typeof vm.openResume === 'function') {
+                  vm.openResume(geek, resolvedIndex);
+                  method = 'vue.openResume';
+                  break;
+                }
+              } catch (error) {
+                invokeError = String(error && error.stack || error);
+              }
+            }
+            if (!method) {
+              const detailButton = [...target.querySelectorAll('button,a,div,span')].find((node) => visible(node) && /查看详情|在线简历|简历/.test(clean(node.innerText || node.textContent || '')));
+              const clickTarget = detailButton || target;
+              clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+              clickTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+              clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              method = detailButton ? 'dom.detail-button-click' : 'dom.card-click';
+            }
+            return {
+              ok: true,
+              method,
+              invokeError,
+              targetIndex: targetIndex + 1,
+              resolvedIndex: resolvedIndex + 1,
+              listCount: cards.length,
+              dataId,
+              friendId: String(geek.geekId || geek.friendId || geek.uid || ''),
+              securityId: String(geek.securityId || ''),
+              name: clean(geek.geekName || geek.name || ''),
+              role: clean(geek.expectPositionName || geek.positionName || geek.position || ''),
+              clickedText: clean(target.innerText || target.textContent || '').slice(0, 2500),
+              url: doc.location ? doc.location.href : location.href
+            };
+          } catch (error) {
+            return { ok: false, reason: 'script-error', error: String(error && error.stack || error), url: location.href };
+          }
+        })();
+        """
+        return script.replace("__TARGET_INDEX__", str(target_index)).replace("__EXPECTED_DATA_ID__", expected)
+
+    def extract_search_detail_script(self, index: int, expected_data_id: str) -> str:
+        target_index = max(0, index - 1)
+        expected = json.dumps(expected_data_id)
+        return f"""
+        (() => {{
+          try {{
+            const targetIndex = {target_index};
+            const expectedDataId = {expected};
+            const clean = (value) => (value || '').replace(/[ \\t]+/g, ' ').replace(/\\n{{3,}}/g, '\\n\\n').trim();
+            const visible = (el) => {{
+              const rect = el.getBoundingClientRect();
+              const style = el.ownerDocument.defaultView.getComputedStyle(el);
+              const opacity = Number(style.opacity || 1);
+              return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none' && opacity > 0.02;
+            }};
+            const searchSelectors = [
+              '.card-list li.geek-info-card',
+              'li.geek-info-card',
+              '.candidate-card-wrap',
+              '[class*="candidate-card"]',
+              '[class*="geek-card"]',
+              '[class*="geek-info-card"]'
+            ];
+            const readySelectors = [
+              '.card-list li.geek-info-card',
+              'li.geek-info-card',
+              '.candidate-card-wrap',
+              '.searchContent a[href*="/geek/"]',
+              '.card-list .item-operate .btn-getcontact'
+            ];
+            const searchDoc = () => {{
+              if (readySelectors.some((selector) => document.querySelector(selector))) return document;
+              for (const frame of [...document.querySelectorAll('iframe')]) {{
+                try {{
+                  const doc = frame.contentDocument;
+                  if (doc && readySelectors.some((selector) => doc.querySelector(selector))) return doc;
+                }} catch (_) {{}}
+              }}
+              return null;
+            }};
+            const cardsOf = (doc) => {{
+              for (const selector of searchSelectors) {{
+                const nodes = [...doc.querySelectorAll(selector)].filter(visible);
+                if (nodes.length) return nodes;
+              }}
+              return [];
+            }};
+            const geekFromCard = (card) => {{
+              const vm = card && card.__vue__;
+              const directRaw = vm && vm.$props && (vm.$props.geekInfo || vm.$props.geek || vm.$props.candidate || vm.$props.item || vm.$props.data || vm.$props.cardData) || null;
+              const direct = directRaw && directRaw.geekInfo && typeof directRaw.geekInfo === 'object' ? directRaw.geekInfo : directRaw;
+              if (direct && (direct.encryptGeekId || direct.encGeekId || direct.geekName || direct.name || direct.securityId)) return direct;
+              const child = vm && Array.isArray(vm.$children)
+                ? vm.$children.find((item) => item && item.$props && (item.$props.geekInfo || item.$props.geek || item.$props.candidate || item.$props.item || item.$props.data))
+                : null;
+              const childRaw = child && child.$props && (child.$props.geekInfo || child.$props.geek || child.$props.candidate || child.$props.item || child.$props.data) || null;
+              const childGeek = childRaw && childRaw.geekInfo && typeof childRaw.geekInfo === 'object' ? childRaw.geekInfo : childRaw;
+              return childGeek || {{}};
+            }};
+            const valueText = (value) => {{
+              if (value == null) return '';
+              if (typeof value === 'string' || typeof value === 'number') return String(value);
+              if (Array.isArray(value)) return value.map(valueText).filter(Boolean).join('、');
+              if (typeof value === 'object') return value.content || value.name || value.title || value.desc || value.description || '';
+              return '';
+            }};
+            const add = (lines, label, value) => {{
+              const text = clean(value == null ? '' : String(value));
+              if (text) lines.push(`${{label}}：${{text}}`);
+            }};
+            const addArray = (lines, label, items, mapper) => {{
+              if (!Array.isArray(items) || !items.length) return;
+              lines.push(`${{label}}：`);
+              items.forEach((item) => {{
+                const text = clean(mapper(item));
+                if (text) lines.push(`- ${{text}}`);
+              }});
+            }};
+            const pickTexts = (item, keys) => {{
+              const out = [];
+              (keys || []).forEach((key) => {{
+                const text = clean(valueText(item && item[key]));
+                if (text && !out.includes(text)) out.push(text);
+              }});
+              return out;
+            }};
+            const buildWorkDetail = (item) => {{
+              const achievements = pickTexts(item, ['workPerformance', 'achievement', 'result', 'performance']);
+              const contents = pickTexts(item, ['responsibility', 'workDesc', 'description', 'content', 'duty', 'detail']);
+              const parts = [];
+              if (achievements.length) parts.push(`业绩：${{achievements.join('；')}}`);
+              if (contents.length) parts.push(`内容：${{contents.join('；')}}`);
+              return parts.join('\\n');
+            }};
+            const buildProjectDetail = (item) => {{
+              const highlights = pickTexts(item, ['achievement', 'result', 'performance']);
+              const contents = pickTexts(item, ['description', 'projectDesc', 'responsibility', 'content', 'detail']);
+              const parts = [];
+              if (highlights.length) parts.push(`业绩：${{highlights.join('；')}}`);
+              if (contents.length) parts.push(`内容：${{contents.join('；')}}`);
+              return parts.join('\\n');
+            }};
+            const stripSearchNoise = (text) => clean(String(text || '')
+              .replace(/搜索畅聊卡[\\s\\S]{{0,600}}?查看详情/g, ' ')
+              .replace(/我的订阅[\\s\\S]{{0,1200}}?(?=联系TA|工作经历|期望职位|教育经历|项目经历|$)/g, ' ')
+              .replace(/其他名校毕业的牛人[\\s\\S]{{0,800}}?(?=联系TA|工作经历|期望职位|教育经历|项目经历|$)/g, ' ')
+              .replace(/继续沟通[\\s\\S]{{0,80}}?查看全部\\d+项分析/g, ' ')
+            );
+            const stripResumeChrome = (text) => clean(stripSearchNoise(String(text || '')
+              .replace(/牛人分析器[\\s\\S]*$/g, ' ')
+              .replace(/查看全部\\d+项分析[\\s\\S]*$/g, ' ')
+              .replace(/为妥善保护牛人在BOSS直聘平台[\\s\\S]*$/g, ' ')
+              .replace(/该牛人本月活跃度高，?赶快联系TA吧/g, ' ')
+              .replace(/该牛人本月平台活跃度高/g, ' ')
+            ));
+            const dedupeParagraphs = (text) => {{
+              const blocks = String(text || '').split(/\\n{{2,}}/).map((block) => clean(block)).filter(Boolean);
+              const seen = new Set();
+              const kept = [];
+              for (const block of blocks) {{
+                const key = block.replace(/\\s+/g, '');
+                if (!key || seen.has(key)) continue;
+                seen.add(key);
+                kept.push(block);
+              }}
+              return clean(kept.join('\\n\\n'));
+            }};
+            const normalizeResumeText = (text) => dedupeParagraphs(stripResumeChrome(text));
+            const cardTextMeta = (rawText) => {{
+              const raw = String(rawText || '').replace(/\\r/g, '\\n');
+              const lines = raw.split(/\\n+/).map(clean).filter(Boolean);
+              const roleLike = (line) => /(产品经理|工程师|开发|算法|研究员|顾问|负责人|专家|架构师|设计师|运营|测试|后端|前端|全栈|大模型|AI|Agent|RAG|Python|Java|Golang)/i.test(String(line || ''));
+              const companyLike = (line) => /(公司|科技|信息|软件|网络|智能|技术|集团|有限|研究院|实验室|医院|银行|大学|学院)/.test(String(line || ''));
+              const cityLike = (line) => {{
+                const text = clean(line);
+                return /^[\\u4e00-\\u9fa5]{{2,8}}$/.test(text)
+                  && !roleLike(text)
+                  && !companyLike(text)
+                  && !/(职位|院校|行业|方向|本科|硕士|博士|活跃|期望|薪资)/.test(text);
+              }};
+              const findMaskedName = () => {{
+                for (const line of lines) {{
+                  const compact = line.replace(/\\s+/g, '');
+                  if (/^[\\u4e00-\\u9fa5A-Za-z]{1,6}(?:\\*{1,2}|先生|女士)$/.test(compact)) return compact;
+                  if (/^[\\u4e00-\\u9fa5A-Za-z*]{2,6}$/.test(compact) && !/[年月日K岁]/.test(compact)) return compact;
+                }}
+                const match = raw.match(/([\\u4e00-\\u9fa5A-Za-z]{1,6}(?:\\*{1,2}|先生|女士))/);
+                return clean(match && match[1] || '');
+              }};
+              const findByLabel = (labels, predicate, fallback = null) => {{
+                const labelList = Array.isArray(labels) ? labels : [labels];
+                for (let i = 0; i < lines.length; i += 1) {{
+                  if (!labelList.includes(lines[i])) continue;
+                  const window = lines.slice(i + 1, i + 5).map(clean).filter(Boolean);
+                  const matched = clean(window.find((line) => predicate(line, window)) || '');
+                  if (matched) return matched;
+                  if (fallback) {{
+                    const alt = clean(fallback(window) || '');
+                    if (alt) return alt;
+                  }}
+                }}
+                return '';
+              }};
+              const city = findByLabel(['期望城市', '期望'], (line) => cityLike(line));
+              const role = findByLabel('职位', (line) => roleLike(line) && !companyLike(line), (window) => {{
+                const byKeyword = window.find((line) => /(产品经理|工程师|开发|算法|研究员|顾问|负责人|专家|架构师|设计师|运营|测试)/.test(line));
+                if (byKeyword) return byKeyword;
+                const firstNonCompany = window.find((line) => !companyLike(line) && line.length <= 24);
+                return firstNonCompany || '';
+              }});
+              return {{
+                name: findMaskedName(),
+                city,
+                role,
+                years: clean((lines.find((line) => /^\\d+(?:-\\d+)?年$/.test(line)) || (raw.match(/(\\d+(?:-\\d+)?年)/) || [])[1] || '')),
+                text: clean(raw)
+              }};
+            }};
+            const markerList = ['个人介绍', '个人优势', '工作经历', '工作经验', '项目经历', '项目经验', '教育经历', '资格证书', '专业技能', '技能标签', '求职期望', '期望职位'];
+            const extractGeekData = (geek) => {{
+              const lines = [];
+              add(lines, '姓名', geek.geekName || geek.name);
+              add(lines, '基本信息', [geek.ageDesc, geek.geekWorkYear || geek.year, geek.geekDegree || geek.degree || geek.edu, geek.applyStatusDesc || geek.positionStatus].filter(Boolean).join(' / '));
+              add(lines, '期望职位', [geek.expectLocationName || geek.city, geek.expectPositionName || geek.positionName || geek.position, geek.salary || geek.price || geek.salaryDesc].filter(Boolean).join(' · '));
+              add(lines, '当前/最近职位', valueText(geek.middleContent) || [geek.lastCompany, geek.lastPosition].filter(Boolean).join(' · '));
+              add(lines, '个人介绍', valueText(geek.geekDesc) || geek.introduce || geek.introduction || geek.advantage || geek.personalSummary || geek.note);
+              add(lines, '推荐理由', valueText(geek.recommendReason) || valueText(geek.webRecommendReason));
+              addArray(lines, '工作经历', geek.geekWorks || geek.showWorks || geek.workExpList, (item) => [
+                item.startDate && item.endDate ? `${{item.startDate}}-${{item.endDate}}` : item.timeDesc || item.workTime,
+                item.company,
+                item.positionName || item.position,
+                buildWorkDetail(item)
+              ].filter(Boolean).join(' · '));
+              addArray(lines, '项目经历', geek.projectExpList || geek.geekProjects || geek.projectList, (item) => [
+                item.timeDesc,
+                item.projectName || item.name,
+                item.roleName || item.positionName,
+                buildProjectDetail(item)
+              ].filter(Boolean).join(' · '));
+              addArray(lines, '教育经历', geek.geekEdus || geek.showEdus || geek.eduExpList, (item) => [
+                item.startDate && item.endDate ? `${{String(item.startDate).slice(0, 4)}}-${{String(item.endDate).slice(0, 4)}}` : item.timeDesc,
+                item.school,
+                item.major,
+                item.degreeName || item.degree
+              ].filter(Boolean).join(' · '));
+              const skills = [
+                ...(Array.isArray(geek.highLightMatches) ? geek.highLightMatches.map(valueText) : []),
+                ...(Array.isArray(geek.matches) ? geek.matches.map(valueText) : []),
+                ...(Array.isArray(geek.feedback) ? geek.feedback.map(valueText) : []),
+                ...(Array.isArray(geek.recLabels) ? geek.recLabels.map(valueText) : []),
+                ...(Array.isArray(geek.highLightGeekResumeWords) ? geek.highLightGeekResumeWords.map(valueText) : [])
+              ].filter(Boolean);
+              add(lines, '专业技能', [...new Set(skills)].join('、'));
+              addArray(lines, '资格证书', geek.certList || geek.certificateList || geek.certificates, (item) => valueText(item));
+              return {{
+                geek,
+                text: normalizeResumeText(lines.join('\\n')),
+                markers: [
+                  geek.geekName || geek.name ? '基本信息' : '',
+                  (geek.geekWorks || geek.showWorks || geek.workExpList || []).length ? '工作经历' : '',
+                  (geek.projectExpList || geek.geekProjects || geek.projectList || []).length ? '项目经历' : '',
+                  (geek.geekEdus || geek.showEdus || geek.eduExpList || []).length ? '教育经历' : '',
+                  skills.length ? '专业技能' : '',
+                  (geek.certList || geek.certificateList || geek.certificates || []).length ? '资格证书' : ''
+                ].filter(Boolean)
+              }};
+            }};
+            const extractApiData = (data) => {{
+              const lines = [];
+              add(lines, '姓名', data.name);
+              add(lines, '基本信息', [data.ageDesc, data.year || data.workYear, data.edu, data.positionStatus].filter(Boolean).join(' / '));
+              add(lines, '期望职位', [data.city, data.position || data.positionName, data.price || data.salaryDesc].filter(Boolean).join(' · '));
+              add(lines, '当前/最近职位', [data.lastCompany, data.lastPosition].filter(Boolean).join(' · '));
+              add(lines, '个人介绍', data.introduce || data.introduction || data.advantage || data.personalSummary || data.note);
+              addArray(lines, '工作经历', data.workExpList, (item) => [
+                item.timeDesc,
+                item.company,
+                item.positionName || item.position,
+                buildWorkDetail(item)
+              ].filter(Boolean).join(' · '));
+              addArray(lines, '项目经历', data.projectExpList, (item) => [
+                item.timeDesc,
+                item.projectName || item.name,
+                item.roleName || item.positionName,
+                buildProjectDetail(item)
+              ].filter(Boolean).join(' · '));
+              addArray(lines, '教育经历', data.eduExpList, (item) => [
+                item.timeDesc,
+                item.school,
+                item.major,
+                item.degree || item.degreeName
+              ].filter(Boolean).join(' · '));
+              const certList = data.certList || data.certificateList || data.certificates;
+              addArray(lines, '资格证书', certList, (item) => valueText(item));
+              add(lines, '专业技能', Array.isArray(data.highLightGeekResumeWords) ? data.highLightGeekResumeWords.join('、') : '');
+              const markers = [];
+              if (data.name) markers.push('基本信息');
+              if (Array.isArray(data.workExpList) && data.workExpList.length) markers.push('工作经历');
+              if (Array.isArray(data.projectExpList) && data.projectExpList.length) markers.push('项目经历');
+              if (Array.isArray(data.eduExpList) && data.eduExpList.length) markers.push('教育经历');
+              if (Array.isArray(certList) && certList.length) markers.push('资格证书');
+              if (Array.isArray(data.highLightGeekResumeWords) && data.highLightGeekResumeWords.length) markers.push('专业技能');
+              return {{
+                geek: {{
+                  ...data,
+                  geekName: data.name || '',
+                  encryptGeekId: data.encryptGeekId || data.encGeekId || '',
+                  geekId: data.uid || data.geekId || ''
+                }},
+                text: normalizeResumeText(lines.join('\\n')),
+                markers
+              }};
+            }};
+            const fetchSearchGeekApi = (geek) => {{
+              try {{
+                const uid = geek && (geek.uid || geek.geekId || geek.friendId || geek.bossFriendId || '');
+                const securityId = geek && (geek.securityId || '');
+                if (!uid || !securityId) return {{ ok: false, reason: 'missing-uid-or-securityId' }};
+                const source = geek && (geek.friendSource || geek.geekSource || 0);
+                const url = `/wapi/zpjob/chat/geek/info?uid=${{encodeURIComponent(uid)}}&geekSource=${{encodeURIComponent(source)}}&securityId=${{encodeURIComponent(securityId)}}`;
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', url, false);
+                xhr.withCredentials = true;
+                xhr.send(null);
+                if (xhr.status < 200 || xhr.status >= 300) return {{ ok: false, reason: `api-status-${{xhr.status}}`, url }};
+                const json = JSON.parse(xhr.responseText || '{{}}');
+                const data = json && json.zpData && json.zpData.data;
+                if (!data || json.code !== 0) return {{ ok: false, reason: 'api-empty-data', url }};
+                return {{ ok: true, url, profile: extractApiData(data) }};
+              }} catch (error) {{
+                return {{ ok: false, reason: 'api-script-error', error: String(error && error.stack || error) }};
+              }}
+            }};
+            const canvasResumeProfile = (expectedName = '') => {{
+              const frame = [...document.querySelectorAll('iframe')].find((item) => /\\/web\\/frame\\/c-resume\\//.test(item.src || ''));
+              if (!frame || !frame.contentWindow || !frame.contentDocument) {{
+                return {{ ok: false, status: 'no-c-resume-frame', text: '', lines: [] }};
+              }}
+              const win = frame.contentWindow;
+              const doc = frame.contentDocument;
+              const expectedKey = clean(expectedName || '').slice(0, 120);
+              const stateBucket = window.__bossSearchResumeHookState = window.__bossSearchResumeHookState || {{}};
+              const stateKey = expectedKey || expectedDataId || '__default__';
+              stateBucket.currentKey = stateKey;
+              stateBucket[stateKey] = stateBucket[stateKey] || {{ reloads: 0, armed: false }};
+              const state = stateBucket[stateKey];
+              const installHook = (targetWin) => {{
+                if (!targetWin || targetWin.__bossSearchResumeCanvasHookInstalled) return true;
+                const patch = (proto, method) => {{
+                  if (!proto || !proto[method] || proto[method].__bossWorkbenchPatched) return;
+                  const original = proto[method];
+                  const patched = function(text, x, y, ...rest) {{
+                    try {{
+                      targetWin.__bossSearchResumeTextLines = targetWin.__bossSearchResumeTextLines || [];
+                      targetWin.__bossSearchResumeTextLines.push({{
+                        method,
+                        text: String(text == null ? '' : text),
+                        x: Number(x) || 0,
+                        y: Number(y) || 0,
+                        font: String(this.font || ''),
+                        fillStyle: String(this.fillStyle || ''),
+                        ts: Date.now()
+                      }});
+                    }} catch (_) {{}}
+                    return original.call(this, text, x, y, ...rest);
+                  }};
+                  patched.__bossWorkbenchPatched = true;
+                  proto[method] = patched;
+                }};
+                patch(targetWin.CanvasRenderingContext2D && targetWin.CanvasRenderingContext2D.prototype, 'fillText');
+                patch(targetWin.CanvasRenderingContext2D && targetWin.CanvasRenderingContext2D.prototype, 'strokeText');
+                patch(targetWin.OffscreenCanvasRenderingContext2D && targetWin.OffscreenCanvasRenderingContext2D.prototype, 'fillText');
+                patch(targetWin.OffscreenCanvasRenderingContext2D && targetWin.OffscreenCanvasRenderingContext2D.prototype, 'strokeText');
+                targetWin.__bossSearchResumeTextLines = [];
+                targetWin.__bossSearchResumeCanvasHookInstalled = true;
+                targetWin.__bossSearchResumeScrollStarted = false;
+                targetWin.__bossSearchResumeScrollDone = false;
+                return true;
+              }};
+              const rows = () => (win.__bossSearchResumeTextLines || []).filter((item) => item && item.text && String(item.text).trim());
+              const armReloadWithEarlyHook = () => {{
+                if (state.reloads >= 2) {{
+                  return {{ ok: false, status: 'canvas-reload-limit-reached', text: '', lines: [], needsRetry: false, reloadCount: state.reloads }};
+                }}
+                state.reloads += 1;
+                state.armed = true;
+                try {{
+                  frame.addEventListener('load', () => {{
+                    try {{
+                      if (frame.contentWindow) {{
+                        installHook(frame.contentWindow);
+                        frame.contentWindow.__bossSearchResumeHookArmed = true;
+                        state.armed = false;
+                      }}
+                    }} catch (_) {{}}
+                  }}, {{ once: true }});
+                  win.location.reload();
+                  return {{ ok: false, status: 'canvas-hook-armed-reload-requested', text: '', lines: [], needsRetry: true, reloadCount: state.reloads }};
+                }} catch (error) {{
+                  return {{ ok: false, status: 'canvas-reload-failed', error: String(error && error.stack || error), text: '', lines: [], needsRetry: false, reloadCount: state.reloads }};
+                }}
+              }};
+              let hookJustInstalled = false;
+              if (!win.__bossSearchResumeCanvasHookInstalled) {{
+                installHook(win);
+                hookJustInstalled = true;
+              }}
+              const switchedCandidate = win.__bossSearchResumeCaptureKey && win.__bossSearchResumeCaptureKey !== stateKey;
+              if (switchedCandidate) {{
+                win.__bossSearchResumeTextLines = [];
+                win.__bossSearchResumeScrollStarted = false;
+                win.__bossSearchResumeScrollDone = false;
+              }}
+              win.__bossSearchResumeCaptureKey = stateKey;
+              const frameReady = (() => {{
+                try {{
+                  return doc.readyState === 'complete' && !!doc.getElementById('resume');
+                }} catch (_) {{
+                  return false;
+                }}
+              }})();
+              if (!frameReady) {{
+                return {{ ok: false, status: 'canvas-frame-loading', text: '', lines: [], needsRetry: true, reloadCount: state.reloads }};
+              }}
+              const captured = rows();
+              if (captured.length < 8 && state.reloads === 0) {{
+                return armReloadWithEarlyHook();
+              }}
+              const outer = [...document.querySelectorAll('.dialog-wrap.active, .boss-dialog, .resume-layout-wrap, .resume-detail-wrap, .resume-container, .resume-common-dialog')]
+                .filter(visible)
+                .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0] || null;
+              if (!win.__bossSearchResumeScrollDone || (captured.length < 20 && !win.__bossSearchResumeScrollStarted)) {{
+                if (!win.__bossSearchResumeScrollStarted) {{
+                  win.__bossSearchResumeScrollStarted = true;
+                  const scroller = outer && outer.scrollHeight > outer.clientHeight + 20 ? outer : (doc.getElementById('resume') || doc.scrollingElement || doc.documentElement);
+                  const max = Math.max(0, (scroller && scroller.scrollHeight || 0) - (scroller && scroller.clientHeight || 0));
+                  const stepSize = Math.max(260, Math.round((scroller && scroller.clientHeight || 0) * 0.82));
+                  const points = [0];
+                  if (max > 0) {{
+                    for (let top = stepSize; top < max; top += stepSize) points.push(top);
+                    points.push(max);
+                  }}
+                  const scrollSteps = [...new Set(points.map((value) => Math.max(0, Math.min(max, value))))];
+                  scrollSteps.forEach((top, stepIndex) => {{
+                    win.setTimeout(() => {{
+                      try {{
+                        scroller.scrollTop = top;
+                        scroller.dispatchEvent(new Event('scroll', {{ bubbles: true }}));
+                        win.dispatchEvent(new Event('scroll'));
+                      }} catch (_) {{}}
+                      if (stepIndex === scrollSteps.length - 1) win.__bossSearchResumeScrollDone = true;
+                    }}, stepIndex * 240);
+                  }});
+                }}
+                return {{
+                  ok: false,
+                  status: hookJustInstalled ? 'canvas-hook-installed-scroll-in-progress' : 'canvas-scroll-in-progress',
+                  rawCount: captured.length,
+                  text: '',
+                  lines: [],
+                  needsRetry: true,
+                  reloadCount: state.reloads
+                }};
+              }}
+              const seen = new Set();
+              const normalized = [];
+              rows().forEach((item, itemIndex) => {{
+                const text = String(item.text || '');
+                const x = Math.round(Number(item.x) || 0);
+                const y = Math.round(Number(item.y) || 0);
+                const key = `${{text}}@${{x}}@${{y}}`;
+                if (!text.trim() || seen.has(key)) return;
+                seen.add(key);
+                normalized.push({{ index: itemIndex, text, x, y, font: String(item.font || '') }});
+              }});
+              normalized.sort((a, b) => a.y - b.y || a.x - b.x || a.index - b.index);
+              const groups = [];
+              normalized.forEach((item) => {{
+                let group = groups.find((current) => Math.abs(current.y - item.y) <= 2);
+                if (!group) {{
+                  group = {{ y: item.y, items: [] }};
+                  groups.push(group);
+                }}
+                group.items.push(item);
+              }});
+              const lines = groups
+                .map((group) => ({{
+                  y: group.y,
+                  text: clean(group.items.sort((a, b) => a.x - b.x || a.index - b.index).map((item) => item.text).join(''))
+                }}))
+                .filter((line) => line.text);
+              const text = normalizeResumeText(lines.map((line) => line.text).join('\\n'));
+              const normalizedExpectedName = clean(expectedName).replace(/\\s+/g, '');
+              const normalizedText = text.replace(/\\s+/g, '');
+              const nameMismatch = !!normalizedExpectedName && !!normalizedText && normalizedText.length > 60 && !normalizedText.includes(normalizedExpectedName);
+              if (nameMismatch && state.reloads < 2) {{
+                return armReloadWithEarlyHook();
+              }}
+              if (text.length < 300 && state.reloads < 2 && rows().length < 8) {{
+                return armReloadWithEarlyHook();
+              }}
+              return {{
+                ok: text.length >= 300 && !nameMismatch,
+                status: nameMismatch ? 'canvas-stale-text-name-mismatch' : (text.length >= 300 ? 'canvas-rendered-text-captured' : 'canvas-rendered-text-too-short'),
+                text,
+                lines,
+                rawCount: rows().length,
+                dedupeCount: normalized.length,
+                lineCount: lines.length,
+                needsRetry: (text.length < 300 || nameMismatch) && state.reloads < 2,
+                reloadCount: state.reloads
+              }};
+            }};
+            const readIframeText = () => {{
+              const texts = [];
+              for (const frame of [...document.querySelectorAll('iframe')]) {{
+                try {{
+                  const href = frame.contentDocument && frame.contentDocument.location && frame.contentDocument.location.href || frame.src || '';
+                  const inResume = /\\/web\\/frame\\/c-resume\\//.test(href) || (resumeRoot && resumeRoot.contains(frame));
+                  if (!inResume || /\\/web\\/frame\\/recommend\\//.test(href)) continue;
+                  const frameText = normalizeResumeText(frame.contentDocument && (frame.contentDocument.body.innerText || frame.contentDocument.body.textContent) || '');
+                  if (!frameText) continue;
+                  if (frameText.length > 80) texts.push(frameText);
+                }} catch (_) {{}}
+              }}
+              return clean(texts.join('\\n\\n'));
+            }};
+            const doc = searchDoc();
+            if (!doc) {{
+              return {{
+                detailText: '',
+                scoreReferenceText: '',
+                pageText: '',
+                resumeOpened: false,
+                resumeFullRead: false,
+                resumeReadReason: 'search-frame-not-ready',
+                url: location.href,
+                title: document.title
+              }};
+            }}
+            const cards = cardsOf(doc);
+            const cache = doc.defaultView && doc.defaultView.__bossWorkbenchSearchCache || {{}};
+            const cached = (expectedDataId ? cache[expectedDataId] : null) || cache[`__index__${{targetIndex}}`] || null;
+            let target = cards[targetIndex];
+            if (expectedDataId) {{
+              target = cards.find((card) => String(geekFromCard(card).encryptGeekId || geekFromCard(card).encGeekId || geekFromCard(card).uniqueId || '') === expectedDataId) || target;
+            }}
+            const cardGeek = target ? geekFromCard(target) : null;
+            const fallbackGeek = cached && cached.geek ? cached.geek : (cardGeek || {{}});
+            const cardText = cached && cached.cardText
+              ? cached.cardText
+              : target
+                ? clean(target.innerText || target.textContent || '')
+                : '';
+            const cardMeta = (cached && cached.meta) || cardTextMeta(target ? (target.innerText || target.textContent || '') : cardText);
+            let profile = extractGeekData(fallbackGeek);
+            const apiResult = fetchSearchGeekApi(profile.geek);
+            if (apiResult.ok && apiResult.profile) {{
+              const apiProfile = apiResult.profile;
+              const apiScore = (apiProfile.markers || []).length * 1000 + (apiProfile.text || '').length;
+              const currentScore = (profile.markers || []).length * 1000 + (profile.text || '').length;
+              if (apiScore >= currentScore + 120 || ((apiProfile.markers || []).includes('项目经历') && !(profile.markers || []).includes('项目经历'))) {{
+                profile = apiProfile;
+              }}
+            }}
+            const chromeNoisePattern = /城市|开启AI搜索|换一换|筛选说明|清空筛选|根据热门词为您检索到以下牛人|综合排序|活跃优先|匹配度优先|搜索畅聊卡|我的订阅/;
+            const resumeRoots = [
+              ...document.querySelectorAll(
+                '.dialog-wrap.active .boss-dialog, ' +
+                '.dialog-wrap.active .boss-dialog__main, ' +
+                '.dialog-wrap.active .boss-dialog__content, ' +
+                '.dialog-wrap.active .resume-layout-wrap, ' +
+                '.dialog-wrap.active .resume-detail-wrap, ' +
+                '.dialog-wrap.active .resume-container, ' +
+                '.dialog-wrap.active .resume-common-dialog, ' +
+                '.dialog-wrap.active .new-chat-resume-dialog-main-ui, ' +
+                '.boss-dialog.search-resume, ' +
+                '.resume-common-dialog.search-resume'
+              )
+            ].filter(visible);
+            const resumeRoot = resumeRoots
+              .sort((a, b) => clean(b.innerText || b.textContent || '').length - clean(a.innerText || a.textContent || '').length)[0] || null;
+            const resumeMainNodes = resumeRoot
+              ? [
+                  ...resumeRoot.querySelectorAll(
+                    '.boss-dialog__main, .boss-dialog__content, .resume-detail-chat, .resume-content-wrap, ' +
+                    '.resume-layout-wrap, .resume-detail-wrap, .new-chat-resume-dialog-main-ui, ' +
+                    '.resume-container [class*="resume"], .resume-container [class*="content"]'
+                  )
+                ].filter(visible)
+              : [];
+            const expectedName = clean(profile && profile.geek && (profile.geek.geekName || profile.geek.name) || '').replace(/\\s+/g, '');
+            const resumeCandidates = resumeMainNodes
+              .map((el) => {{
+                const text = normalizeResumeText(el.innerText || el.textContent || '');
+                const className = String(el.className || '');
+                const markers = markerList.filter((marker) => text.includes(marker));
+                const normalizedText = text.replace(/\\s+/g, '');
+                const hasExpectedName = !!expectedName && normalizedText.includes(expectedName);
+                const nameMismatch = !!expectedName && normalizedText.length > 80 && !hasExpectedName;
+                const hasCoreSection = /工作经历|工作经验|项目经历|项目经验|教育经历/.test(text);
+                const hasChromeNoise = chromeNoisePattern.test(text.slice(0, 1200));
+                const score =
+                  markers.length * 100
+                  + (text.includes('项目经历') || text.includes('项目经验') ? 280 : 0)
+                  + (text.includes('工作经历') || text.includes('工作经验') ? 120 : 0)
+                  + (text.includes('教育经历') ? 80 : 0)
+                  + (text.includes('期望职位') ? 60 : 0)
+                  + (hasExpectedName ? 240 : 0)
+                  + (hasCoreSection ? 180 : 0)
+                  + Math.min(text.length, 5000) / 50
+                  - (hasChromeNoise ? 900 : 0)
+                  - (nameMismatch ? 999 : 0);
+                return {{ text, markers, className, score, nameMismatch, hasExpectedName, hasCoreSection, hasChromeNoise }};
+              }})
+              .filter((item) => item.text.length >= 120 && !item.hasChromeNoise)
+              .sort((a, b) => b.score - a.score);
+            const bestResume = resumeCandidates.find((item) => !item.nameMismatch) || resumeCandidates[0] || null;
+            const resumeText = bestResume ? bestResume.text : '';
+            const resumeMarkers = bestResume ? bestResume.markers : [];
+            const iframeText = readIframeText();
+            const canvasProfile = canvasResumeProfile(profile.geek.geekName || profile.geek.name || '');
+            const summaryLines = [
+              cardMeta.name ? `姓名：${{cardMeta.name}}` : '',
+              cardMeta.years ? `工作年限：${{cardMeta.years}}` : '',
+              cardMeta.city ? `期望城市：${{cardMeta.city}}` : '',
+              cardMeta.role ? `期望职位：${{cardMeta.role}}` : '',
+            ].filter(Boolean);
+            const domLooksLikeResume = !!(bestResume && bestResume.hasExpectedName && bestResume.hasCoreSection && !bestResume.hasChromeNoise);
+            const domResumeText = domLooksLikeResume ? resumeText : '';
+            const iframeLooksLikeResume = iframeText.length >= 180 && (!expectedName || iframeText.replace(/\\s+/g, '').includes(expectedName)) && /工作经历|工作经验|项目经历|项目经验|教育经历|期望职位/.test(iframeText);
+            const rawResumeText = normalizeResumeText([canvasProfile.text, iframeLooksLikeResume ? iframeText : '', domResumeText].filter(Boolean).join('\\n\\n'));
+            const domMarkers = markerList.filter((marker) => rawResumeText.includes(marker));
+            const canvasMarkers = markerList.filter((marker) => String(canvasProfile.text || '').includes(marker));
+            const mergedMarkers = [...new Set([...(profile.markers || []), ...resumeMarkers, ...domMarkers])];
+            const hasMarkerGroup = (markers, names) => names.some((name) => markers.includes(name));
+            const sectionStateOf = (markers) => ({{
+              expect: hasMarkerGroup(markers, ['期望职位', '求职期望']),
+              work: hasMarkerGroup(markers, ['工作经历', '工作经验']),
+              project: hasMarkerGroup(markers, ['项目经历', '项目经验']),
+              education: hasMarkerGroup(markers, ['教育经历']),
+              skills: hasMarkerGroup(markers, ['专业技能', '技能标签'])
+            }});
+            const allMainSectionsPresent = (markers) => {{
+              const state = sectionStateOf(markers);
+              return state.expect && state.work && state.project && state.education && state.skills;
+            }};
+            const missingSectionsOf = (markers) => {{
+              const state = sectionStateOf(markers);
+              return [
+                state.expect ? '' : '期望职位',
+                state.work ? '' : '工作经历',
+                state.project ? '' : '项目经验',
+                state.education ? '' : '教育经历',
+                state.skills ? '' : '专业技能'
+              ].filter(Boolean);
+            }};
+            const hasResumeFrame = !!(canvasProfile.status && canvasProfile.status !== 'no-c-resume-frame');
+            const domFullRead = domLooksLikeResume && rawResumeText.length >= 300 && allMainSectionsPresent(domMarkers);
+            const canvasFullRead = canvasProfile.ok && canvasProfile.text.length >= 300 && allMainSectionsPresent(canvasMarkers);
+            const apiStandaloneOk = !hasResumeFrame || (!canvasProfile.needsRetry && !resumeRoot);
+            const apiFullRead = !!profile.text && profile.text.length >= 260 && allMainSectionsPresent(profile.markers || []) && apiStandaloneOk;
+            const resumeFullRead = canvasFullRead || domFullRead || apiFullRead;
+            const needsResumeCanvasRetry = !!canvasProfile.needsRetry || (!!resumeRoot && hasResumeFrame && !canvasFullRead && !domFullRead);
+            const detailSource = normalizeResumeText([
+              summaryLines.join('\\n'),
+              rawResumeText,
+              profile.text
+            ].filter(Boolean).join('\\n\\n'));
+            const scoreReference = detailSource;
+            const resumeOpened = !!resumeRoot || hasResumeFrame || !!canvasProfile.text;
+            return {{
+              detailText: detailSource.slice(0, 12000),
+              scoreReferenceText: scoreReference.slice(0, 30000),
+              pageText: '',
+              resumeOpened,
+              resumeClicked: resumeOpened,
+              resumeFullRead,
+              resumeReadReason: resumeFullRead
+                ? (canvasFullRead ? 'search-canvas-full-resume' : (domFullRead ? 'search-dom-full-resume' : 'search-api-structured-profile'))
+                : (canvasProfile.needsRetry
+                    ? `search-canvas-${{canvasProfile.status || 'waiting'}}`
+                    : `insufficient-search-profile:${{detailSource.length}}:${{mergedMarkers.join('|')}}:missing=${{missingSectionsOf(mergedMarkers).join('|')}}:api=${{profile.text.length}}`),
+              resumeMarkers: mergedMarkers,
+              resumeApiOk: apiResult.ok,
+              resumeApiUrl: apiResult.ok ? apiResult.url : '',
+              resumeApiTextLength: profile.text.length,
+              resumeRootClass: bestResume && bestResume.className
+                ? String(bestResume.className || '').slice(0, 240)
+                : (resumeRoot ? String(resumeRoot.className || '').slice(0, 240) : ''),
+              resumeCanvasStatus: canvasProfile.status || '',
+              resumeCanvasText: (canvasProfile.text || '').slice(0, 12000),
+              resumeCanvasLineCount: canvasProfile.lineCount || 0,
+              resumeCanvasReloadCount: canvasProfile.reloadCount || 0,
+              needsResumeCanvasRetry,
+              clickedText: cardText.slice(0, 2500),
+              name: clean(profile.geek.geekName || profile.geek.name || cardMeta.name || ''),
+              role: clean(profile.geek.expectPositionName || profile.geek.positionName || profile.geek.position || cardMeta.role || ''),
+              city: clean(profile.geek.expectLocationName || profile.geek.city || cardMeta.city || ''),
+              years: clean(profile.geek.geekWorkYear || profile.geek.year || cardMeta.years || ''),
+              readState: clean(profile.geek.viewed ? '已查看' : '未查看'),
+              dataId: String(profile.geek.encryptGeekId || profile.geek.encGeekId || profile.geek.uniqueId || expectedDataId || ''),
+              bossFriendId: String(profile.geek.geekId || profile.geek.friendId || profile.geek.uid || ''),
+              securityId: String(profile.geek.securityId || ''),
+              url: doc.location ? doc.location.href : location.href,
+              title: doc.title || document.title
+            }};
+          }} catch (error) {{
+            return {{ detailText: '', pageText: '', url: location.href, title: document.title, error: String(error && error.stack || error) }};
+          }}
+        }})();
         """
 
     def locate_recommend_candidate_script(self, index: int) -> str:
@@ -5603,6 +7005,86 @@ class ScanController:
         })();
         """
 
+    def close_search_resume_script(self) -> str:
+        return """
+        (async () => {
+          try {
+            const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const visible = (el) => {
+              if (!el) return false;
+              const rect = el.getBoundingClientRect();
+              const style = el.ownerDocument.defaultView.getComputedStyle(el);
+              const opacity = Number(style.opacity || 1);
+              return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none' && opacity > 0.02;
+            };
+            const rootSelectors = [
+              '.dialog-wrap.active',
+              '.boss-dialog',
+              '.resume-layout-wrap',
+              '.resume-detail-wrap',
+              '.resume-container',
+              '.resume-common-dialog',
+              '.new-chat-resume-dialog-main-ui'
+            ];
+            const collectRoots = () => rootSelectors.flatMap((selector) => [...document.querySelectorAll(selector)]).filter(visible);
+            const selectors = [
+              '.dialog-wrap.active .close',
+              '.dialog-wrap.active [class*="close"]',
+              '.dialog-wrap.active .iboss-close',
+              '.boss-dialog .close',
+              '.boss-dialog [class*="close"]',
+              '.boss-dialog .iboss-close',
+              '.resume-layout-wrap .close',
+              '.resume-layout-wrap [class*="close"]',
+              '.resume-layout-wrap .iboss-close',
+              '.resume-detail-wrap .close',
+              '.resume-detail-wrap [class*="close"]',
+              '.resume-container .close',
+              '.resume-container [class*="close"]',
+              '.resume-common-dialog .close',
+              '.resume-common-dialog [class*="close"]',
+              '.new-chat-resume-dialog-main-ui .close',
+              '.new-chat-resume-dialog-main-ui [class*="close"]'
+            ];
+            const wasOpen = collectRoots().length > 0;
+            let clicked = false;
+            for (let attempt = 0; attempt < 6; attempt += 1) {
+              const roots = collectRoots();
+              if (!roots.length) break;
+              for (const selector of selectors) {
+                const buttons = [...document.querySelectorAll(selector)].filter(visible);
+                if (!buttons.length) continue;
+                const target = buttons[0];
+                target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                clicked = true;
+                break;
+              }
+              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+              document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+              await sleep(160);
+            }
+            const visibleRoots = collectRoots();
+            const stillOpen = visibleRoots.length > 0;
+            const summaryNode = visibleRoots[0] || document.body;
+            return {
+              ok: !stillOpen,
+              wasOpen,
+              clicked,
+              stillOpen,
+              visibleRootCount: visibleRoots.length,
+              summary: clean(((summaryNode && summaryNode.innerText) || '').slice(0, 160)),
+              url: location.href,
+              title: document.title
+            };
+          } catch (error) {
+            return { ok: false, error: String(error && error.stack || error), url: location.href, title: document.title };
+          }
+        })();
+        """
+
     def close_online_resume_script(self) -> str:
         return """
         (async () => {
@@ -5689,7 +7171,11 @@ class ScanController:
             self.app.append_log(f"扫描完成：计划 {len(self.queue)} 位，尝试执行 {self.current} 位，成功写入 {self.processed} 位，失败 {self.failed} 位。")
 
     def mode_label(self) -> str:
-        return "投递人选扫描" if self.mode == "inbound" else "推荐牛人查看"
+        if self.mode == "inbound":
+            return "投递人选扫描"
+        if self.mode == "outbound":
+            return "推荐牛人查看"
+        return "搜索找人扫描"
 
 
 class FeishuLoginDialog(QDialog):
@@ -6062,6 +7548,8 @@ class BossWorkbench(QMainWindow):
         self.scan_position_labels: list[QLabel] = []
         self.scan_total_labels: list[QLabel] = []
         self.scan_stop_labels: list[QLabel] = []
+        self.scan_start_buttons: list[QPushButton] = []
+        self.scan_stop_buttons: list[QPushButton] = []
         self.eval_score_labels: list[QLabel] = []
         self.eval_text_edits: list[QTextEdit] = []
         self.update_bridge = UpdateBridge(self)
@@ -6078,6 +7566,7 @@ class BossWorkbench(QMainWindow):
         self.setMinimumSize(1100, 720)
         self.build_ui()
         self.apply_style()
+        self.update_scan_controls()
         self.refresh_job_selector()
         self.load_feishu_settings()
         self.refresh_feishu_session_views()
@@ -6121,6 +7610,9 @@ class BossWorkbench(QMainWindow):
         recommend_action = QAction("打开推荐牛人", self)
         recommend_action.triggered.connect(lambda: self.navigate_boss("https://www.zhipin.com/web/chat/recommend"))
         toolbar.addAction(recommend_action)
+        search_action = QAction("打开搜索页", self)
+        search_action.triggered.connect(lambda: self.navigate_boss("https://www.zhipin.com/web/chat/search"))
+        toolbar.addAction(search_action)
 
     def build_left(self) -> QWidget:
         root = QWidget()
@@ -6151,19 +7643,30 @@ class BossWorkbench(QMainWindow):
             ("工作台", self.build_dashboard()),
             ("投递人选", self.build_inbound()),
             ("主动找人", self.build_outbound()),
+            ("搜索找人", self.build_search()),
             ("候选人池", self.build_pool()),
             ("岗位配置", self.build_job_config()),
             ("话术模板", self.build_templates()),
             ("飞书与用量", self.build_auth_settings()),
         ]
         hidden_labels = {"飞书与用量"}  # 隐藏这些菜单按钮（页面仍然加载）
+        nav_positions = {
+            "工作台": (0, 0, 1, 3),
+            "投递人选": (1, 0, 1, 1),
+            "主动找人": (1, 1, 1, 1),
+            "搜索找人": (1, 2, 1, 1),
+            "候选人池": (2, 0, 1, 1),
+            "岗位配置": (2, 1, 1, 1),
+            "话术模板": (2, 2, 1, 1),
+        }
         for i, (label, page) in enumerate(nav_items):
             button = QPushButton(label)
             button.setCheckable(True)
             button.clicked.connect(lambda checked=False, index=i: self.stack.setCurrentIndex(index))
             self.nav_group.addButton(button)
             if label not in hidden_labels:
-                nav_layout.addWidget(button, i // 3, i % 3)
+                row, column, row_span, column_span = nav_positions.get(label, (99, 0, 1, 1))
+                nav_layout.addWidget(button, row, column, row_span, column_span)
             else:
                 button.setVisible(False)
             self.stack.addWidget(page)
@@ -6200,8 +7703,11 @@ class BossWorkbench(QMainWindow):
         inbound.clicked.connect(lambda: self.stack.setCurrentIndex(1))
         outbound = QPushButton("主动找人")
         outbound.clicked.connect(lambda: self.stack.setCurrentIndex(2))
+        search = QPushButton("搜索找人")
+        search.clicked.connect(lambda: self.stack.setCurrentIndex(3))
         button_row.addWidget(inbound)
         button_row.addWidget(outbound)
+        button_row.addWidget(search)
         action_layout.addLayout(button_row)
         layout.addWidget(action_box)
         layout.addStretch()
@@ -6228,9 +7734,11 @@ class BossWorkbench(QMainWindow):
         actions = QHBoxLayout()
         start = QPushButton("开始扫描")
         start.clicked.connect(self.start_inbound)
+        self.scan_start_buttons.append(start)
         stop = QPushButton("停止当前扫描")
         stop.setObjectName("Danger")
         stop.clicked.connect(self.scan.request_stop)
+        self.scan_stop_buttons.append(stop)
         actions.addWidget(start)
         actions.addWidget(stop)
         layout.addLayout(actions)
@@ -6251,10 +7759,15 @@ class BossWorkbench(QMainWindow):
         self.score_threshold = QSpinBox()
         self.score_threshold.setRange(0, 100)
         self.score_threshold.setValue(85)
-        self.auto_hello = QCheckBox("自动打招呼")
+        self.auto_hello = QCheckBox()
+        auto_hello_row = QWidget()
+        auto_hello_layout = QHBoxLayout(auto_hello_row)
+        auto_hello_layout.setContentsMargins(0, 0, 0, 0)
+        auto_hello_layout.addStretch()
+        auto_hello_layout.addWidget(self.auto_hello)
         form.addRow("扫描数量", self.outbound_limit)
         form.addRow("分数阈值", self.score_threshold)
-        form.addRow("", self.auto_hello)
+        form.addRow("自动打招呼", auto_hello_row)
         layout.addLayout(form)
         note = QLabel("默认只生成建议。开启自动打招呼后，只有评分超过阈值才会点击推荐卡片上的打招呼。")
         note.setWordWrap(True)
@@ -6263,9 +7776,46 @@ class BossWorkbench(QMainWindow):
         actions = QHBoxLayout()
         start = QPushButton("开始查看推荐牛人")
         start.clicked.connect(self.start_outbound)
+        self.scan_start_buttons.append(start)
         stop = QPushButton("停止当前扫描")
         stop.setObjectName("Danger")
         stop.clicked.connect(self.scan.request_stop)
+        self.scan_stop_buttons.append(stop)
+        actions.addWidget(start)
+        actions.addWidget(stop)
+        layout.addLayout(actions)
+        layout.addWidget(self.build_scan_status())
+        layout.addWidget(self.build_evaluation())
+        layout.addStretch()
+        return page
+
+    def build_search(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QLabel("入口：搜索页 /web/chat/search"))
+        form = QFormLayout()
+        self.search_limit = QSpinBox()
+        self.search_limit.setRange(1, 200)
+        self.search_limit.setValue(20)
+        self.search_score_threshold = QSpinBox()
+        self.search_score_threshold.setRange(0, 100)
+        self.search_score_threshold.setValue(85)
+        form.addRow("扫描数量", self.search_limit)
+        form.addRow("分数阈值", self.search_score_threshold)
+        layout.addLayout(form)
+        note = QLabel("当前阶段只保留搜索页扫描、在线简历补全和候选人评估，不执行联系TA自动化。")
+        note.setWordWrap(True)
+        note.setObjectName("Subtitle")
+        layout.addWidget(note)
+        actions = QHBoxLayout()
+        start = QPushButton("开始扫描搜索页")
+        start.clicked.connect(self.start_search)
+        self.scan_start_buttons.append(start)
+        stop = QPushButton("停止当前扫描")
+        stop.setObjectName("Danger")
+        stop.clicked.connect(self.scan.request_stop)
+        self.scan_stop_buttons.append(stop)
         actions.addWidget(start)
         actions.addWidget(stop)
         layout.addLayout(actions)
@@ -6365,8 +7915,13 @@ class BossWorkbench(QMainWindow):
         dir_widget = QWidget()
         dir_widget.setLayout(dir_row)
         self.job_template = QTextEdit()
+        new_job = QPushButton("新增岗位")
+        new_job.clicked.connect(self.create_new_job)
         save = QPushButton("保存岗位配置")
         save.clicked.connect(self.save_current_job)
+        actions = QHBoxLayout()
+        actions.addWidget(new_job)
+        actions.addWidget(save)
         form.addRow("岗位名称", self.job_name)
         form.addRow("城市", self.job_city)
         form.addRow("薪资范围", self.job_salary)
@@ -6376,7 +7931,7 @@ class BossWorkbench(QMainWindow):
         form.addRow("排除项", self.job_exclusions)
         form.addRow("简历保存目录", dir_widget)
         form.addRow("默认沟通话术", self.job_template)
-        form.addRow("", save)
+        form.addRow("", actions)
         return page
 
     def build_templates(self) -> QWidget:
@@ -6928,6 +8483,31 @@ class BossWorkbench(QMainWindow):
         self.refresh_job_selector()
         self.append_log("岗位配置已保存。")
 
+    def create_new_job(self) -> None:
+        base_name = self.job_name.text().strip() or "新岗位"
+        existing_names = {job.name.strip() for job in self.repo.jobs()}
+        candidate_name = f"{base_name} - 副本"
+        suffix = 2
+        while candidate_name in existing_names:
+            candidate_name = f"{base_name} - 副本{suffix}"
+            suffix += 1
+        job = JobConfig(
+            id=0,
+            name=candidate_name,
+            city=self.job_city.text(),
+            salary=self.job_salary.text(),
+            experience=self.job_exp.text(),
+            must_have=self.job_must.toPlainText(),
+            nice_to_have=self.job_nice.toPlainText(),
+            exclusions=self.job_exclusions.toPlainText(),
+            resume_dir=self.job_resume_dir.text(),
+            default_template=self.job_template.toPlainText(),
+        )
+        self.current_job_id = self.repo.create_job(job)
+        self.refresh_job_selector()
+        self.refresh_pool()
+        self.append_log(f"已新增岗位：{candidate_name}")
+
     def choose_resume_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择简历保存目录", self.job_resume_dir.text())
         if selected:
@@ -7026,6 +8606,63 @@ class BossWorkbench(QMainWindow):
         limit = min(self.outbound_limit.value(), count)
         self.append_log(f"当前 BOSS 推荐牛人列表识别到 {count} 张卡片；本次扫描前 {limit} 位。")
         self.scan.start("outbound", list(range(1, limit + 1)))
+
+    def start_search(self) -> None:
+        if not self.ensure_feishu_session():
+            return
+        current_url = self.browser.url().toString()
+        should_navigate = "zhipin.com/web/chat/search" not in current_url
+        if should_navigate:
+            self.navigate_boss("https://www.zhipin.com/web/chat/search")
+        self.append_log(f"准备读取 BOSS 搜索找人列表。仅做扫描评估，阈值 {self.search_score_threshold.value()}，目标 {self.search_limit.value()} 位。")
+        delay = 2600 if should_navigate else 500
+        QTimer.singleShot(delay, self.prepare_search_scan)
+
+    def prepare_search_scan(self, attempt: int = 1) -> None:
+        self.browser.page().runJavaScript(
+            self.scan.json_script(self.scan.search_candidate_count_script()),
+            lambda result, attempt=attempt: self.on_search_counted(result, attempt),
+        )
+
+    def on_search_counted(self, result: Any, attempt: int = 1) -> None:
+        payload = self.scan.parse_js_payload(result)
+        self.write_scan_log("search_count", {**payload, "attempt": attempt, "target": self.search_limit.value(), "scrollCount": self.scan.search_scroll_attempts})
+        if not payload.get("ok"):
+            if attempt < 5:
+                self.append_log(f"搜索页列表暂未加载完成；第 {attempt} 次重试。")
+                QTimer.singleShot(900, lambda: self.prepare_search_scan(attempt + 1))
+                return
+            QMessageBox.warning(self, "搜索列表读取失败", f"没有读取到 BOSS 搜索结果列表：{payload.get('reason') or payload.get('error') or '未知错误'}")
+            return
+        count = int(payload.get("listCount") or 0)
+        target = self.search_limit.value()
+        can_scroll = bool(payload.get("canScroll"))
+        if count <= 0:
+            self.set_scan_state("未请求", "无可扫描搜索人选", 0)
+            self.append_log("当前搜索页没有识别到候选人卡片，扫描未启动。")
+            return
+        if count < target and can_scroll and self.scan.search_scroll_attempts < 60:
+            self.scan.search_scroll_attempts += 1
+            self.append_log(f"搜索页已加载 {count}/{target} 位，正在自动滚动补齐（第 {self.scan.search_scroll_attempts}/60 次）。")
+            QTimer.singleShot(300, self.scroll_search_results)
+            return
+        limit = min(target, count)
+        if limit < target:
+            self.append_log(f"搜索页最终识别到 {count} 位人选；已尽力自动滚动，本次先扫描 {limit} 位。")
+        else:
+            self.append_log(f"搜索页识别到 {count} 位人选；已凑满目标数量，本次扫描前 {limit} 位。")
+        self.scan.start("search", list(range(1, limit + 1)))
+
+    def scroll_search_results(self) -> None:
+        self.browser.page().runJavaScript(
+            self.scan.json_script(self.scan.scroll_search_results_script()),
+            self.on_search_scrolled,
+        )
+
+    def on_search_scrolled(self, result: Any) -> None:
+        payload = self.scan.parse_js_payload(result)
+        self.write_scan_log("search_scroll", {**payload, "attempt": self.scan.search_scroll_attempts, "target": self.search_limit.value(), "scrollCount": self.scan.search_scroll_attempts, "maxScrolls": 60})
+        QTimer.singleShot(700, self.prepare_search_scan)
 
     def refresh_pool(self, order: str = "recent") -> None:
         rows = self.repo.candidates(self.current_job_id, order)
@@ -7186,6 +8823,14 @@ class BossWorkbench(QMainWindow):
                 return
             self.run_pool_recommend_open(data, "open_source_resume")
             return
+        if source == "搜索找人":
+            self.append_log(f"准备在搜索页打开 {data['name']} 的在线简历源页面。")
+            if "zhipin.com/web/chat/search" not in self.browser.url().toString():
+                self.navigate_boss("https://www.zhipin.com/web/chat/search")
+                QTimer.singleShot(2600, lambda data=data: self.run_pool_search_open(data, "open_source_resume"))
+                return
+            self.run_pool_search_open(data, "open_source_resume")
+            return
         self.append_log(f"准备在沟通页打开 {data['name']} 的在线简历源页面。")
         if "zhipin.com/web/chat" not in self.browser.url().toString():
             self.navigate_boss("https://www.zhipin.com/web/chat/index")
@@ -7215,6 +8860,27 @@ class BossWorkbench(QMainWindow):
             reason = "页面刷新后就找不到没有沟通过的人选了"
         self.append_log(f"在推荐牛人页打开 {row['name']} 的在线简历失败：{reason}。")
         QMessageBox.warning(self, "打开源简历失败", f"没有成功在推荐牛人页打开 {row['name']} 的在线简历：{reason}")
+
+    def run_pool_search_open(self, row: dict[str, Any], action: str = "open_source_resume") -> None:
+        list_index = int(row.get("list_index") or 1)
+        data_id = str(row.get("boss_data_id") or "")
+        self.browser.page().runJavaScript(
+            self.scan.json_script(self.scan.open_search_candidate_script(list_index, data_id)),
+            lambda result, row=row, action=action: self.on_pool_search_opened(row, result, action),
+        )
+
+    def on_pool_search_opened(self, row: dict[str, Any], result: Any, action: str) -> None:
+        payload = self.scan.parse_js_payload(result)
+        self.write_scan_log("pool_open_search_resume", {"candidate": row, "action": action, "result": payload})
+        if payload.get("ok"):
+            self.append_log(
+                f"已在搜索页打开 {row['name']} 的在线简历源页面"
+                f"（列表第 {payload.get('resolvedIndex') or payload.get('targetIndex') or '?'} 位）。"
+            )
+            return
+        reason = payload.get("reason") or payload.get("error") or "未知错误"
+        self.append_log(f"在搜索页打开 {row['name']} 的在线简历失败：{reason}。")
+        QMessageBox.warning(self, "打开源简历失败", f"没有成功在搜索页打开 {row['name']} 的在线简历：{reason}")
 
     def run_pool_chat_open(self, row: dict[str, Any], action: str = "open") -> None:
         script = self.pool_open_candidate_script(row)
@@ -7787,6 +9453,15 @@ class BossWorkbench(QMainWindow):
         if total is not None:
             for label in self.scan_total_labels:
                 label.setText(str(total))
+        self.update_scan_controls()
+
+    def update_scan_controls(self) -> None:
+        active = bool(getattr(self, "scan", None) and self.scan.active)
+        stop_requested = bool(getattr(self, "scan", None) and self.scan.stop_requested)
+        for button in getattr(self, "scan_start_buttons", []):
+            button.setEnabled(not active)
+        for button in getattr(self, "scan_stop_buttons", []):
+            button.setEnabled(active and not stop_requested)
 
     def append_log(self, text: str) -> None:
         self.log_label.setText(text)
@@ -7830,6 +9505,10 @@ class BossWorkbench(QMainWindow):
             QPushButton#SubDanger { min-height: 28px; padding: 0 10px; border-radius: 6px; color: #b42318; background: #fff7f6; border-color: #ffd1cb; font-size: 12px; }
             QPushButton#RowAction { min-height: 26px; padding: 0 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
             QPushButton#RowDanger { min-height: 26px; padding: 0 8px; border-radius: 6px; color: #b42318; background: #fff7f6; border-color: #ffd1cb; font-size: 12px; font-weight: 600; }
+            QCheckBox { background: transparent; spacing: 8px; padding: 2px 0; font-weight: 700; color: #15201d; }
+            QCheckBox::indicator { width: 18px; height: 18px; border-radius: 5px; border: 1px solid #9fb4ad; background: white; }
+            QCheckBox::indicator:hover { border-color: #0f8f68; }
+            QCheckBox::indicator:checked { border-color: #0f8f68; background: #0f8f68; }
             QComboBox, QLineEdit, QTextEdit, QSpinBox { border: 1px solid #d8e0de; border-radius: 8px; padding: 8px; background: white; }
             QGroupBox, QFrame#Card, QFrame#Metric { border: 1px solid #d8e0de; border-radius: 8px; margin-top: 10px; padding: 12px; background: white; }
             QFrame#SubToolbar { border: 1px solid #d8e0de; border-radius: 8px; background: white; }
