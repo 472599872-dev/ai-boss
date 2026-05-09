@@ -320,7 +320,7 @@ DEFAULT_APP_CONFIG = {
     "dify_user_id": "boss-workbench",
     "boss_workbench_autoscan": False,
     "windows_update_enabled": True,
-    "windows_update_manifest_url": "",
+    "windows_update_manifest_url": "https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest.json",
     "windows_update_check_on_startup": True,
     "windows_update_channel": "stable",
     "windows_update_timeout_seconds": 15,
@@ -7578,8 +7578,7 @@ class BossWorkbench(QMainWindow):
         self.navigate_boss("https://www.zhipin.com/web/chat/index")
         if app_config_bool("boss_workbench_autoscan", False) or os.environ.get("BOSS_WORKBENCH_AUTOSCAN") == "1":
             QTimer.singleShot(5000, self.autoscan_once)
-        if sys.platform.startswith("win") and app_config_bool("windows_update_enabled", True) and app_config_bool("windows_update_check_on_startup", True):
-            QTimer.singleShot(8000, lambda: self.check_for_updates(manual=False))
+        self.schedule_auto_update_check(delay_ms=8000)
 
     def build_ui(self) -> None:
         splitter = QSplitter(Qt.Horizontal)
@@ -8201,6 +8200,7 @@ class BossWorkbench(QMainWindow):
             write_runtime_error_log("reauth_refresh_usage_failed", {"open_id_suffix": self.feishu_session.open_id[-6:] if self.feishu_session.open_id else ""}, exc)
             self.feishu_usage_label.setText("今日用量：飞书登录成功，但云端读取异常，已切换为本地统计。")
         self.append_log(f"飞书登录成功：{self.feishu_session.name or self.feishu_session.open_id}")
+        self.schedule_auto_update_check(delay_ms=1200)
         return True
 
     def logout_feishu(self) -> None:
@@ -8307,6 +8307,17 @@ class BossWorkbench(QMainWindow):
     def open_update_dir(self) -> None:
         UPDATE_DIR.mkdir(parents=True, exist_ok=True)
         open_local_path(UPDATE_DIR)
+
+    def schedule_auto_update_check(self, delay_ms: int = 0) -> None:
+        if not sys.platform.startswith("win"):
+            return
+        if not app_config_bool("windows_update_enabled", True):
+            return
+        if not app_config_bool("windows_update_check_on_startup", True):
+            return
+        if not self.feishu_session:
+            return
+        QTimer.singleShot(max(0, int(delay_ms)), lambda: self.check_for_updates(manual=False))
 
     def check_for_updates(self, manual: bool = True) -> None:
         if not sys.platform.startswith("win"):
