@@ -36,7 +36,6 @@ from typing import Any, Iterable
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal
-from PySide6.QtGui import QAction
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWidgets import (
     QApplication,
@@ -65,7 +64,6 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
-    QToolBar,
     QVBoxLayout,
     QWidget,
 )
@@ -324,6 +322,11 @@ DEFAULT_APP_CONFIG = {
     "windows_update_check_on_startup": True,
     "windows_update_channel": "stable",
     "windows_update_timeout_seconds": 15,
+    "macos_update_enabled": True,
+    "macos_update_manifest_url": "https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest-macos.json",
+    "macos_update_check_on_startup": True,
+    "macos_update_channel": "stable",
+    "macos_update_timeout_seconds": 15,
 }
 _APP_CONFIG_CACHE: dict[str, Any] | None = None
 _APP_CONFIG_MTIME_NS: int = -1
@@ -446,14 +449,16 @@ class CandidateSeed:
 @dataclass
 class UpdateInfo:
     version: str
-    installer_url: str
+    package_url: str
     sha256: str
+    platform: str = "windows"
+    package_kind: str = "installer"
     notes: str = ""
     published_at: str = ""
     size: int = 0
     mandatory: bool = False
     manifest_url: str = ""
-    installer_args: list[str] | None = None
+    launch_args: list[str] | None = None
 
 
 class UpdateBridge(QObject):
@@ -1162,14 +1167,58 @@ def parse_windows_update_manifest(payload: dict[str, Any], manifest_url: str) ->
         installer_args = []
     return UpdateInfo(
         version=version,
-        installer_url=installer_url,
+        package_url=installer_url,
         sha256=sha256,
+        platform="windows",
+        package_kind="exe",
         notes=str(payload.get("notes") or windows.get("notes") or "").strip(),
         published_at=str(payload.get("published_at") or windows.get("published_at") or "").strip(),
         size=safe_int(windows.get("size"), 0),
         mandatory=bool(windows.get("mandatory") or payload.get("mandatory")),
         manifest_url=manifest_url,
-        installer_args=installer_args,
+        launch_args=installer_args,
+    )
+
+
+def parse_macos_update_manifest(payload: dict[str, Any], manifest_url: str) -> UpdateInfo:
+    macos = payload.get("macos")
+    if not isinstance(macos, dict):
+        raise ValueError("更新清单缺少 macos 节点。")
+    version = str(macos.get("version") or payload.get("version") or payload.get("latest_version") or "").strip()
+    package_url = str(
+        macos.get("package_url")
+        or macos.get("dmg_url")
+        or macos.get("zip_url")
+        or macos.get("url")
+        or ""
+    ).strip()
+    sha256 = normalize_sha256(str(macos.get("sha256") or macos.get("digest") or ""))
+    package_kind = str(macos.get("package_kind") or "").strip().lower()
+    if not package_kind:
+        if package_url.lower().endswith(".dmg"):
+            package_kind = "dmg"
+        elif package_url.lower().endswith(".zip"):
+            package_kind = "zip"
+        else:
+            package_kind = "package"
+    if not version:
+        raise ValueError("更新清单缺少版本号。")
+    if not package_url:
+        raise ValueError("更新清单缺少 macOS 安装包地址。")
+    if not sha256:
+        raise ValueError("更新清单缺少 sha256，无法安全校验安装包。")
+    return UpdateInfo(
+        version=version,
+        package_url=package_url,
+        sha256=sha256,
+        platform="macos",
+        package_kind=package_kind,
+        notes=str(payload.get("notes") or macos.get("notes") or "").strip(),
+        published_at=str(payload.get("published_at") or macos.get("published_at") or "").strip(),
+        size=safe_int(macos.get("size"), 0),
+        mandatory=bool(macos.get("mandatory") or payload.get("mandatory")),
+        manifest_url=manifest_url,
+        launch_args=[],
     )
 
 
@@ -1202,6 +1251,14 @@ def fetch_windows_update(manifest_url: str, current_version: str, channel: str =
     return info
 
 
+def fetch_macos_update(manifest_url: str, current_version: str, channel: str = "stable", timeout: int = 15) -> UpdateInfo | None:
+    payload = fetch_json(manifest_url, timeout=timeout)
+    info = parse_macos_update_manifest(select_update_channel_payload(payload, channel), manifest_url)
+    if not is_newer_version(info.version, current_version):
+        return None
+    return info
+
+
 def sha256_of_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -1217,9 +1274,10 @@ def safe_filename_from_url(url: str, fallback: str) -> str:
     return name or fallback
 
 
-def download_windows_installer(info: UpdateInfo, target_dir: Path, timeout: int = 30) -> Path:
+def download_update_package(info: UpdateInfo, target_dir: Path, timeout: int = 30) -> Path:
     target_dir.mkdir(parents=True, exist_ok=True)
-    filename = safe_filename_from_url(info.installer_url, f"{APP_ID}-{info.version}-setup.exe")
+    default_name = f"{APP_ID}-{info.version}.{info.package_kind or 'pkg'}"
+    filename = safe_filename_from_url(info.package_url, default_name)
     final_path = target_dir / filename
     if final_path.exists() and sha256_of_file(final_path) == info.sha256:
         return final_path
@@ -1228,7 +1286,7 @@ def download_windows_installer(info: UpdateInfo, target_dir: Path, timeout: int 
     temp_path = Path(temp_name)
     try:
         req = urllib.request.Request(
-            info.installer_url,
+            info.package_url,
             headers={"User-Agent": f"{APP_ID}/{APP_VERSION}"},
             method="GET",
         )
@@ -1285,6 +1343,10 @@ def launch_windows_installer(installer_path: Path, installer_args: list[str] | N
         ],
         creationflags=creationflags,
     )
+
+
+def open_macos_update_package(package_path: Path) -> None:
+    open_local_path(package_path)
 
 
 def today_text() -> str:
@@ -7582,104 +7644,133 @@ class BossWorkbench(QMainWindow):
 
     def build_ui(self) -> None:
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setObjectName("WorkbenchSplitter")
         splitter.setChildrenCollapsible(False)
-        splitter.addWidget(self.build_left())
-        splitter.addWidget(self.build_browser())
-        splitter.setSizes([430, 990])
+        self.left_panel = self.build_left()
+        self.right_panel = self.build_browser()
+        splitter.addWidget(self.left_panel)
+        splitter.addWidget(self.right_panel)
+        self.main_splitter = splitter
+        splitter.setSizes([460, 960])
         self.setCentralWidget(splitter)
-
-        toolbar = QToolBar("应用")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-        reload_action = QAction("刷新右侧", self)
-        reload_action.triggered.connect(self.browser.reload)
-        toolbar.addAction(reload_action)
-        log_action = QAction("打开采集日志", self)
-        log_action.triggered.connect(self.open_scan_log)
-        toolbar.addAction(log_action)
-        auth_action = QAction("飞书登录", self)
-        auth_action.triggered.connect(self.reauthenticate_feishu)
-        toolbar.addAction(auth_action)
-        usage_action = QAction("刷新今日用量", self)
-        usage_action.triggered.connect(self.refresh_usage_summary)
-        toolbar.addAction(usage_action)
-        home_action = QAction("打开沟通页", self)
-        home_action.triggered.connect(lambda: self.navigate_boss("https://www.zhipin.com/web/chat/index"))
-        toolbar.addAction(home_action)
-        recommend_action = QAction("打开推荐牛人", self)
-        recommend_action.triggered.connect(lambda: self.navigate_boss("https://www.zhipin.com/web/chat/recommend"))
-        toolbar.addAction(recommend_action)
-        search_action = QAction("打开搜索页", self)
-        search_action.triggered.connect(lambda: self.navigate_boss("https://www.zhipin.com/web/chat/search"))
-        toolbar.addAction(search_action)
+        QTimer.singleShot(0, self.adjust_default_splitter_sizes)
 
     def build_left(self) -> QWidget:
         root = QWidget()
+        root.setObjectName("LeftShell")
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setContentsMargins(22, 20, 22, 20)
         layout.setSpacing(12)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("PageScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.left_scroll = scroll
+        layout.addWidget(scroll, 1)
+
+        content = QWidget()
+        content.setObjectName("PageScrollContent")
+        content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        scroll.setWidget(content)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
 
         title = QLabel("AI 招聘工作台")
         title.setObjectName("Title")
         self.top_subtitle = QLabel("本地桌面客户端 · 关键动作可控")
         self.top_subtitle.setObjectName("Subtitle")
-        layout.addWidget(self.top_subtitle)
-        layout.addWidget(title)
+        content_layout.addWidget(self.top_subtitle)
+        content_layout.addWidget(title)
 
         self.job_selector = QComboBox()
+        self.job_selector.setObjectName("JobSelector")
         self.job_selector.currentIndexChanged.connect(self.on_job_changed)
-        layout.addWidget(QLabel("当前岗位"))
-        layout.addWidget(self.job_selector)
+        current_job_label = QLabel("当前岗位")
+        current_job_label.setObjectName("Subtitle")
+        content_layout.addWidget(current_job_label)
+        content_layout.addWidget(self.job_selector)
 
         nav = QWidget()
+        nav.setObjectName("NavBlock")
         nav_layout = QGridLayout(nav)
         nav_layout.setContentsMargins(0, 0, 0, 0)
-        nav_layout.setSpacing(8)
+        nav_layout.setSpacing(10)
         self.stack = QStackedWidget()
+        self.stack.setObjectName("PageStack")
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         nav_items = [
             ("工作台", self.build_dashboard()),
-            ("投递人选", self.build_inbound()),
-            ("主动找人", self.build_outbound()),
-            ("搜索找人", self.build_search()),
-            ("候选人池", self.build_pool()),
-            ("岗位配置", self.build_job_config()),
-            ("话术模板", self.build_templates()),
-            ("飞书与用量", self.build_auth_settings()),
+            ("当前账号", self.build_auth_settings()),
         ]
-        hidden_labels = {"飞书与用量"}  # 隐藏这些菜单按钮（页面仍然加载）
         nav_positions = {
-            "工作台": (0, 0, 1, 3),
-            "投递人选": (1, 0, 1, 1),
-            "主动找人": (1, 1, 1, 1),
-            "搜索找人": (1, 2, 1, 1),
-            "候选人池": (2, 0, 1, 1),
-            "岗位配置": (2, 1, 1, 1),
-            "话术模板": (2, 2, 1, 1),
+            "工作台": (0, 0, 1, 1),
+            "当前账号": (0, 1, 1, 1),
         }
+        self.nav_buttons: list[QPushButton] = []
         for i, (label, page) in enumerate(nav_items):
             button = QPushButton(label)
             button.setCheckable(True)
-            button.clicked.connect(lambda checked=False, index=i: self.stack.setCurrentIndex(index))
+            button.toggled.connect(lambda checked, index=i: checked and self.set_current_page(index))
             self.nav_group.addButton(button)
-            if label not in hidden_labels:
-                row, column, row_span, column_span = nav_positions.get(label, (99, 0, 1, 1))
-                nav_layout.addWidget(button, row, column, row_span, column_span)
-            else:
-                button.setVisible(False)
+            row, column, row_span, column_span = nav_positions.get(label, (99, 0, 1, 1))
+            nav_layout.addWidget(button, row, column, row_span, column_span)
             self.stack.addWidget(page)
+            self.nav_buttons.append(button)
             if i == 0:
                 button.setChecked(True)
-        layout.addWidget(nav)
-        layout.addWidget(self.stack, 1)
+        self.stack.currentChanged.connect(self.sync_stack_height)
+        content_layout.addWidget(nav)
+        content_layout.addWidget(self.stack)
+        content_layout.addStretch()
+        QTimer.singleShot(0, lambda: self.set_current_page(0))
+        QTimer.singleShot(0, self.reset_left_scroll)
         return root
+
+    def set_current_page(self, index: int) -> None:
+        if hasattr(self, "nav_buttons") and 0 <= index < len(self.nav_buttons):
+            button = self.nav_buttons[index]
+            if not button.isChecked():
+                button.blockSignals(True)
+                button.setChecked(True)
+                button.blockSignals(False)
+        self.stack.setCurrentIndex(index)
+        self.sync_stack_height(index)
+        self.reset_left_scroll()
+
+    def sync_stack_height(self, index: int | None = None) -> None:
+        if not hasattr(self, "stack"):
+            return
+        current = self.stack.currentWidget()
+        if current is None:
+            return
+        self.stack.setMinimumHeight(current.sizeHint().height())
+        self.stack.updateGeometry()
+
+    def reset_left_scroll(self) -> None:
+        if hasattr(self, "left_scroll"):
+            self.left_scroll.horizontalScrollBar().setValue(0)
+            self.left_scroll.verticalScrollBar().setValue(0)
+
+    def adjust_default_splitter_sizes(self) -> None:
+        if not hasattr(self, "main_splitter") or not hasattr(self, "left_panel"):
+            return
+        left_hint = self.left_panel.sizeHint().width()
+        target_left = max(460, left_hint + 24)
+        total_width = max(sum(self.main_splitter.sizes()), target_left + 720)
+        self.main_splitter.setSizes([target_left, max(720, total_width - target_left)])
 
     def build_dashboard(self) -> QWidget:
         page = QWidget()
+        page.setObjectName("PagePanel")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
         metrics = QGridLayout()
+        metrics.setSpacing(12)
         self.metric_labels: dict[str, QLabel] = {}
         for i, key in enumerate(["待评估", "可沟通", "已索简历", "已淘汰"]):
             box = QFrame()
@@ -7694,44 +7785,147 @@ class BossWorkbench(QMainWindow):
             metrics.addWidget(box, i // 2, i % 2)
         layout.addLayout(metrics)
 
-        action_box = QGroupBox("今日执行")
-        action_layout = QVBoxLayout(action_box)
-        action_layout.addWidget(QLabel("建议先处理投递人选，再查看推荐牛人。"))
-        button_row = QHBoxLayout()
-        inbound = QPushButton("处理投递")
-        inbound.clicked.connect(lambda: self.stack.setCurrentIndex(1))
-        outbound = QPushButton("主动找人")
-        outbound.clicked.connect(lambda: self.stack.setCurrentIndex(2))
-        search = QPushButton("搜索找人")
-        search.clicked.connect(lambda: self.stack.setCurrentIndex(3))
-        button_row.addWidget(inbound)
-        button_row.addWidget(outbound)
-        button_row.addWidget(search)
-        action_layout.addLayout(button_row)
-        layout.addWidget(action_box)
+        quick_box = QGroupBox("快捷操作")
+        quick_layout = QVBoxLayout(quick_box)
+        quick_layout.addWidget(QLabel("所有业务功能统一收进工作台，下方切换当前模块。"))
+        quick_row = QHBoxLayout()
+        manage_row = QHBoxLayout()
+        self.workbench_stack = QStackedWidget()
+        self.workbench_stack.setObjectName("WorkbenchContentStack")
+        self.workbench_pages = [
+            ("投递人选", self.build_inbound()),
+            ("主动找人", self.build_outbound()),
+            ("搜索找人", self.build_search()),
+            ("候选人池", self.build_pool()),
+            ("岗位配置", self.build_job_config()),
+            ("话术模板", self.build_templates()),
+        ]
+        self.workbench_button_group = QButtonGroup(self)
+        self.workbench_button_group.setExclusive(True)
+        self.workbench_buttons: list[QPushButton] = []
+        for i, (label, widget) in enumerate(self.workbench_pages):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.toggled.connect(lambda checked, index=i: checked and self.set_current_workbench_page(index))
+            self.workbench_button_group.addButton(button)
+            if i < 3:
+                quick_row.addWidget(button)
+            else:
+                manage_row.addWidget(button)
+            self.workbench_stack.addWidget(widget)
+            self.workbench_buttons.append(button)
+            if i == 0:
+                button.setChecked(True)
+        quick_layout.addLayout(quick_row)
+        quick_layout.addLayout(manage_row)
+        layout.addWidget(quick_box)
+        self.workbench_stack.currentChanged.connect(self.sync_workbench_stack_height)
+        layout.addWidget(self.workbench_stack)
+        self.sync_workbench_stack_height(0)
         layout.addStretch()
         return page
 
+    def set_current_workbench_page(self, index: int) -> None:
+        if not hasattr(self, "workbench_stack"):
+            return
+        if hasattr(self, "workbench_buttons") and 0 <= index < len(self.workbench_buttons):
+            button = self.workbench_buttons[index]
+            if not button.isChecked():
+                button.blockSignals(True)
+                button.setChecked(True)
+                button.blockSignals(False)
+        self.workbench_stack.setCurrentIndex(index)
+        self.sync_workbench_stack_height(index)
+        self.sync_stack_height()
+
+    def sync_workbench_stack_height(self, index: int | None = None) -> None:
+        if not hasattr(self, "workbench_stack"):
+            return
+        current = self.workbench_stack.currentWidget()
+        if current is None:
+            return
+        self.workbench_stack.setMinimumHeight(current.sizeHint().height())
+        self.workbench_stack.updateGeometry()
+
+    def configure_form_layout(self, form: QFormLayout) -> None:
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        form.setFormAlignment(Qt.AlignTop | Qt.AlignLeft)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(12)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSizeConstraint(QFormLayout.SetMinimumSize)
+
+    def build_entry_card(
+        self,
+        intro_text: str,
+        form: QFormLayout,
+        actions: QHBoxLayout | None = None,
+        note_text: str = "",
+    ) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("Card")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+        layout.setSizeConstraint(QVBoxLayout.SetMinimumSize)
+        intro = QLabel(intro_text)
+        intro.setObjectName("SectionIntro")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        form_host = QFrame()
+        form_host.setObjectName("FormHost")
+        form_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        form_host_layout = QVBoxLayout(form_host)
+        form_host_layout.setContentsMargins(0, 0, 0, 0)
+        form_host_layout.setSpacing(0)
+        form_host_layout.setSizeConstraint(QVBoxLayout.SetMinimumSize)
+        form_host_layout.addLayout(form)
+        layout.addWidget(form_host)
+        if note_text:
+            note = QLabel(note_text)
+            note.setWordWrap(True)
+            note.setObjectName("Subtitle")
+            layout.addWidget(note)
+        if actions is not None:
+            actions_host = QFrame()
+            actions_host.setObjectName("ActionHost")
+            actions_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+            actions_host_layout = QVBoxLayout(actions_host)
+            actions_host_layout.setContentsMargins(0, 0, 0, 0)
+            actions_host_layout.setSpacing(0)
+            actions_host_layout.setSizeConstraint(QVBoxLayout.SetMinimumSize)
+            actions_host_layout.addLayout(actions)
+            layout.addWidget(actions_host)
+        return frame
+
     def build_inbound(self) -> QWidget:
         page = QWidget()
+        page.setObjectName("PagePanel")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(QLabel("入口：BOSS 沟通页 /web/chat/index"))
+        layout.setSpacing(14)
         form = QFormLayout()
+        self.configure_form_layout(form)
         self.inbound_start = QSpinBox()
         self.inbound_start.setRange(1, 999)
         self.inbound_start.setValue(1)
+        self.inbound_start.setFixedWidth(108)
         self.inbound_end = QSpinBox()
         self.inbound_end.setRange(1, 999)
         self.inbound_end.setValue(12)
+        self.inbound_end.setFixedWidth(108)
         self.message_state = QComboBox()
         self.message_state.addItems(["全部", "只看未读", "只看已读"])
+        self.message_state.setFixedWidth(128)
         form.addRow("开始序号", self.inbound_start)
         form.addRow("结束序号", self.inbound_end)
         form.addRow("消息状态", self.message_state)
-        layout.addLayout(form)
         actions = QHBoxLayout()
+        actions.setContentsMargins(0, 6, 0, 0)
+        actions.setSpacing(12)
         start = QPushButton("开始扫描")
+        start.setObjectName("PrimaryAction")
         start.clicked.connect(self.start_inbound)
         self.scan_start_buttons.append(start)
         stop = QPushButton("停止当前扫描")
@@ -7740,7 +7934,7 @@ class BossWorkbench(QMainWindow):
         self.scan_stop_buttons.append(stop)
         actions.addWidget(start)
         actions.addWidget(stop)
-        layout.addLayout(actions)
+        layout.addWidget(self.build_entry_card("入口：BOSS 沟通页 /web/chat/index", form, actions))
         layout.addWidget(self.build_scan_status())
         layout.addWidget(self.build_evaluation())
         layout.addStretch()
@@ -7748,16 +7942,20 @@ class BossWorkbench(QMainWindow):
 
     def build_outbound(self) -> QWidget:
         page = QWidget()
+        page.setObjectName("PagePanel")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(QLabel("入口：推荐牛人 /web/chat/recommend"))
+        layout.setSpacing(14)
         form = QFormLayout()
+        self.configure_form_layout(form)
         self.outbound_limit = QSpinBox()
         self.outbound_limit.setRange(1, 200)
         self.outbound_limit.setValue(20)
+        self.outbound_limit.setFixedWidth(108)
         self.score_threshold = QSpinBox()
         self.score_threshold.setRange(0, 100)
         self.score_threshold.setValue(85)
+        self.score_threshold.setFixedWidth(108)
         self.auto_hello = QCheckBox()
         auto_hello_row = QWidget()
         auto_hello_layout = QHBoxLayout(auto_hello_row)
@@ -7767,13 +7965,11 @@ class BossWorkbench(QMainWindow):
         form.addRow("扫描数量", self.outbound_limit)
         form.addRow("分数阈值", self.score_threshold)
         form.addRow("自动打招呼", auto_hello_row)
-        layout.addLayout(form)
-        note = QLabel("默认只生成建议。开启自动打招呼后，只有评分超过阈值才会点击推荐卡片上的打招呼。")
-        note.setWordWrap(True)
-        note.setObjectName("Subtitle")
-        layout.addWidget(note)
         actions = QHBoxLayout()
+        actions.setContentsMargins(0, 6, 0, 0)
+        actions.setSpacing(12)
         start = QPushButton("开始查看推荐牛人")
+        start.setObjectName("PrimaryAction")
         start.clicked.connect(self.start_outbound)
         self.scan_start_buttons.append(start)
         stop = QPushButton("停止当前扫描")
@@ -7782,7 +7978,14 @@ class BossWorkbench(QMainWindow):
         self.scan_stop_buttons.append(stop)
         actions.addWidget(start)
         actions.addWidget(stop)
-        layout.addLayout(actions)
+        layout.addWidget(
+            self.build_entry_card(
+                "入口：推荐牛人 /web/chat/recommend",
+                form,
+                actions,
+                "默认只生成建议。开启自动打招呼后，只有评分超过阈值才会点击推荐卡片上的打招呼。",
+            )
+        )
         layout.addWidget(self.build_scan_status())
         layout.addWidget(self.build_evaluation())
         layout.addStretch()
@@ -7790,25 +7993,27 @@ class BossWorkbench(QMainWindow):
 
     def build_search(self) -> QWidget:
         page = QWidget()
+        page.setObjectName("PagePanel")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(QLabel("入口：搜索页 /web/chat/search"))
+        layout.setSpacing(14)
         form = QFormLayout()
+        self.configure_form_layout(form)
         self.search_limit = QSpinBox()
         self.search_limit.setRange(1, 200)
         self.search_limit.setValue(20)
+        self.search_limit.setFixedWidth(108)
         self.search_score_threshold = QSpinBox()
         self.search_score_threshold.setRange(0, 100)
         self.search_score_threshold.setValue(85)
+        self.search_score_threshold.setFixedWidth(108)
         form.addRow("扫描数量", self.search_limit)
         form.addRow("分数阈值", self.search_score_threshold)
-        layout.addLayout(form)
-        note = QLabel("当前阶段只保留搜索页扫描、在线简历补全和候选人评估，不执行联系TA自动化。")
-        note.setWordWrap(True)
-        note.setObjectName("Subtitle")
-        layout.addWidget(note)
         actions = QHBoxLayout()
+        actions.setContentsMargins(0, 6, 0, 0)
+        actions.setSpacing(12)
         start = QPushButton("开始扫描搜索页")
+        start.setObjectName("PrimaryAction")
         start.clicked.connect(self.start_search)
         self.scan_start_buttons.append(start)
         stop = QPushButton("停止当前扫描")
@@ -7817,7 +8022,14 @@ class BossWorkbench(QMainWindow):
         self.scan_stop_buttons.append(stop)
         actions.addWidget(start)
         actions.addWidget(stop)
-        layout.addLayout(actions)
+        layout.addWidget(
+            self.build_entry_card(
+                "入口：搜索页 /web/chat/search",
+                form,
+                actions,
+                "当前阶段只保留搜索页扫描、在线简历补全和候选人评估，不执行联系TA自动化。",
+            )
+        )
         layout.addWidget(self.build_scan_status())
         layout.addWidget(self.build_evaluation())
         layout.addStretch()
@@ -7827,6 +8039,9 @@ class BossWorkbench(QMainWindow):
         frame = QFrame()
         frame.setObjectName("Card")
         layout = QGridLayout(frame)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setHorizontalSpacing(24)
+        layout.setVerticalSpacing(8)
         scan_position = QLabel("未开始")
         scan_total = QLabel("0")
         scan_stop = QLabel("未请求")
@@ -7839,13 +8054,18 @@ class BossWorkbench(QMainWindow):
             title_label = QLabel(title)
             title_label.setObjectName("Subtitle")
             value.setObjectName("Strong")
+            title_label.setAlignment(Qt.AlignCenter)
+            value.setAlignment(Qt.AlignCenter)
             layout.addWidget(title_label, 0, col)
             layout.addWidget(value, 1, col)
+            layout.setColumnStretch(col, 1)
         return frame
 
     def build_evaluation(self) -> QWidget:
         frame = QGroupBox("AI 评分输出")
         layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
         eval_score = QLabel("等待真实候选人")
         eval_score.setObjectName("Score")
         eval_text = QTextEdit()
@@ -7860,8 +8080,10 @@ class BossWorkbench(QMainWindow):
 
     def build_pool(self) -> QWidget:
         page = QWidget()
+        page.setObjectName("PagePanel")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
         tools_frame = QFrame()
         tools_frame.setObjectName("SubToolbar")
         tools = QHBoxLayout(tools_frame)
@@ -7893,11 +8115,10 @@ class BossWorkbench(QMainWindow):
         return page
 
     def build_job_config(self) -> QWidget:
-        page = QScrollArea()
-        page.setWidgetResizable(True)
-        inner = QWidget()
-        page.setWidget(inner)
-        form = QFormLayout(inner)
+        page = QWidget()
+        page.setObjectName("PagePanel")
+        form = QFormLayout(page)
+        self.configure_form_layout(form)
         self.job_name = QLineEdit()
         self.job_city = QLineEdit()
         self.job_salary = QLineEdit()
@@ -7917,6 +8138,7 @@ class BossWorkbench(QMainWindow):
         new_job = QPushButton("新增岗位")
         new_job.clicked.connect(self.create_new_job)
         save = QPushButton("保存岗位配置")
+        save.setObjectName("PrimaryAction")
         save.clicked.connect(self.save_current_job)
         actions = QHBoxLayout()
         actions.addWidget(new_job)
@@ -7935,8 +8157,10 @@ class BossWorkbench(QMainWindow):
 
     def build_templates(self) -> QWidget:
         page = QWidget()
+        page.setObjectName("PagePanel")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
         templates = [
             ("初次沟通", "你好，看了你的经历，和我们正在招的岗位比较匹配，想进一步了解你最近一个相关项目。"),
             ("索要附件简历", "方便的话可以发一份附件简历吗？我这边想结合完整项目经历做进一步评估。"),
@@ -7954,40 +8178,115 @@ class BossWorkbench(QMainWindow):
         return page
 
     def build_auth_settings(self) -> QWidget:
-        page = QScrollArea()
-        page.setWidgetResizable(True)
-        inner = QWidget()
-        page.setWidget(inner)
-        layout = QVBoxLayout(inner)
+        page = QWidget()
+        page.setObjectName("PagePanel")
+        layout = QVBoxLayout(page)
+        layout.setSpacing(16)
 
-        session_box = QGroupBox("当前飞书身份")
-        session_layout = QVBoxLayout(session_box)
-        self.feishu_identity_label = QLabel("未登录")
-        self.feishu_identity_label.setWordWrap(True)
-        self.feishu_identity_label.setObjectName("Subtitle")
-        self.feishu_usage_label = QLabel("今日用量：待刷新")
-        self.feishu_usage_label.setWordWrap(True)
-        self.feishu_usage_label.setObjectName("Subtitle")
-        session_actions = QHBoxLayout()
+        def build_info_rows(box: QGroupBox, rows: list[tuple[str, str]]) -> QGridLayout:
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(16)
+            grid.setVerticalSpacing(12)
+            grid.setColumnStretch(1, 1)
+            for row_index, (label_text, attr_name) in enumerate(rows):
+                key = QLabel(label_text)
+                key.setObjectName("AccountFieldLabel")
+                value = QLabel("-")
+                value.setObjectName("AccountFieldValue")
+                value.setWordWrap(True)
+                setattr(self, attr_name, value)
+                grid.addWidget(key, row_index, 0)
+                grid.addWidget(value, row_index, 1)
+            return grid
+
+        account_box = QGroupBox("当前飞书用户")
+        account_box.setObjectName("AccountCard")
+        account_layout = QVBoxLayout(account_box)
+        account_layout.setSpacing(14)
+        account_layout.addLayout(
+            build_info_rows(
+                account_box,
+                [
+                    ("姓名", "account_user_name_value"),
+                    ("邮箱", "account_user_email_value"),
+                    ("会话到期", "account_user_expiry_value"),
+                ],
+            )
+        )
+        account_actions = QHBoxLayout()
+        account_actions.setSpacing(12)
         relogin_button = QPushButton("重新登录")
+        relogin_button.setObjectName("AccountSecondaryAction")
         relogin_button.clicked.connect(self.reauthenticate_feishu)
         logout_button = QPushButton("退出当前账号")
+        logout_button.setObjectName("Danger")
         logout_button.clicked.connect(self.logout_feishu)
-        refresh_usage_button = QPushButton("刷新今日用量")
-        refresh_usage_button.clicked.connect(self.refresh_usage_summary)
-        sync_usage_button = QPushButton("立即同步云文档")
-        sync_usage_button.clicked.connect(self.sync_usage_to_feishu)
-        session_actions.addWidget(relogin_button)
-        session_actions.addWidget(logout_button)
-        session_actions.addWidget(refresh_usage_button)
-        session_actions.addWidget(sync_usage_button)
-        session_layout.addWidget(self.feishu_identity_label)
-        session_layout.addWidget(self.feishu_usage_label)
-        session_layout.addLayout(session_actions)
-        layout.addWidget(session_box)
+        relogin_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        logout_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        account_actions.addWidget(relogin_button)
+        account_actions.addWidget(logout_button)
+        account_layout.addLayout(account_actions)
+        layout.addWidget(account_box)
 
-        login_box = QGroupBox("飞书登录配置")
-        login_form = QFormLayout(login_box)
+        usage_box = QGroupBox("当前 Token 情况")
+        usage_box.setObjectName("AccountCard")
+        usage_layout = QVBoxLayout(usage_box)
+        usage_layout.setSpacing(14)
+        usage_layout.addLayout(
+            build_info_rows(
+                usage_box,
+                [
+                    ("今日请求", "account_usage_requests_value"),
+                    ("今日 Token", "account_usage_tokens_value"),
+                    ("云端额度", "account_usage_quota_value"),
+                    ("本机累计", "account_usage_total_value"),
+                ],
+            )
+        )
+        usage_actions = QHBoxLayout()
+        usage_actions.setSpacing(12)
+        refresh_usage_button = QPushButton("刷新 token 用量")
+        refresh_usage_button.setObjectName("AccountSecondaryAction")
+        refresh_usage_button.clicked.connect(self.refresh_usage_summary)
+        sync_usage_button = QPushButton("同步云端额度")
+        sync_usage_button.setObjectName("AccountSecondaryAction")
+        sync_usage_button.clicked.connect(self.sync_usage_to_feishu)
+        refresh_usage_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        sync_usage_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        usage_actions.addWidget(refresh_usage_button)
+        usage_actions.addWidget(sync_usage_button)
+        usage_layout.addLayout(usage_actions)
+        layout.addWidget(usage_box)
+
+        version_box = QGroupBox("版本与更新")
+        version_box.setObjectName("AccountCard")
+        version_layout = QVBoxLayout(version_box)
+        version_layout.setSpacing(14)
+        version_layout.addLayout(
+            build_info_rows(
+                version_box,
+                [
+                    ("当前版本", "account_version_current_value"),
+                    ("更新状态", "account_version_status_value"),
+                    ("更新通道", "account_version_channel_value"),
+                ],
+            )
+        )
+        version_actions = QHBoxLayout()
+        version_actions.setSpacing(12)
+        check_update_button = QPushButton("检查更新")
+        check_update_button.setObjectName("PrimaryAction")
+        check_update_button.clicked.connect(lambda: self.check_for_updates(manual=True))
+        open_update_dir_button = QPushButton("打开更新目录")
+        open_update_dir_button.setObjectName("AccountSecondaryAction")
+        open_update_dir_button.clicked.connect(self.open_update_dir)
+        check_update_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        open_update_dir_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        version_actions.addWidget(check_update_button)
+        version_actions.addWidget(open_update_dir_button)
+        version_layout.addLayout(version_actions)
+        layout.addWidget(version_box)
+
         self.feishu_app_id_input = QLineEdit()
         self.feishu_app_secret_input = QLineEdit()
         self.feishu_app_secret_input.setEchoMode(QLineEdit.Password)
@@ -7998,88 +8297,47 @@ class BossWorkbench(QMainWindow):
         self.feishu_tenant_token_url_input = QLineEdit()
         self.feishu_redirect_uri_input = QLineEdit()
         self.feishu_scope_input = QLineEdit()
-        login_form.addRow("App ID", self.feishu_app_id_input)
-        login_form.addRow("App Secret", self.feishu_app_secret_input)
-        login_form.addRow("授权地址", self.feishu_auth_url_input)
-        login_form.addRow("App Token 地址", self.feishu_app_token_url_input)
-        login_form.addRow("用户 Token 地址", self.feishu_user_token_url_input)
-        login_form.addRow("用户信息地址", self.feishu_user_info_url_input)
-        login_form.addRow("Tenant Token 地址", self.feishu_tenant_token_url_input)
-        login_form.addRow("回调地址", self.feishu_redirect_uri_input)
-        login_form.addRow("Scope", self.feishu_scope_input)
-        layout.addWidget(login_box)
-
-        quota_box = QGroupBox("飞书人员额度表")
-        quota_form = QFormLayout(quota_box)
         self.feishu_bitable_base_input = QLineEdit()
         self.feishu_bitable_app_token_input = QLineEdit()
         self.feishu_bitable_table_id_input = QLineEdit()
         self.feishu_daily_limit_input = QLineEdit()
         self.feishu_field_mapping_edit = QTextEdit()
         self.feishu_field_mapping_edit.setMinimumHeight(180)
-        quota_form.addRow("Bitable API Base", self.feishu_bitable_base_input)
-        quota_form.addRow("Bitable App Token", self.feishu_bitable_app_token_input)
-        quota_form.addRow("Bitable Table ID", self.feishu_bitable_table_id_input)
-        quota_form.addRow("旧版每日限额（兼容项）", self.feishu_daily_limit_input)
-        quota_form.addRow("字段映射 JSON", self.feishu_field_mapping_edit)
-        layout.addWidget(quota_box)
-
-        help_text = QLabel(
-            "当前飞书多维表格会被当作“人员额度表”使用。"
-            "只有已经登记在表中的账号，才能登录成功；每次 AI 调用后，系统都会累计写回已用 token。"
-            "如果自建 Dify 网关没有返回 usage，本地会退化为按文本长度估算。"
-        )
-        help_text.setWordWrap(True)
-        help_text.setObjectName("Subtitle")
-        layout.addWidget(help_text)
-
-        update_box = QGroupBox("Windows 在线更新")
-        update_layout = QVBoxLayout(update_box)
-        self.update_status_label = QLabel()
-        self.update_status_label.setWordWrap(True)
-        self.update_status_label.setObjectName("Subtitle")
-        update_form = QFormLayout()
         self.windows_update_enabled_input = QCheckBox("启用在线更新")
         self.windows_update_startup_input = QCheckBox("启动后自动检查")
         self.windows_update_manifest_url_input = QLineEdit()
         self.windows_update_channel_input = QLineEdit()
         self.windows_update_timeout_input = QLineEdit()
-        update_form.addRow("", self.windows_update_enabled_input)
-        update_form.addRow("", self.windows_update_startup_input)
-        update_form.addRow("更新清单 URL", self.windows_update_manifest_url_input)
-        update_form.addRow("更新通道", self.windows_update_channel_input)
-        update_form.addRow("请求超时（秒）", self.windows_update_timeout_input)
-        update_layout.addWidget(self.update_status_label)
-        update_layout.addLayout(update_form)
-        update_actions = QHBoxLayout()
-        check_update_button = QPushButton("立即检查更新")
-        check_update_button.clicked.connect(lambda: self.check_for_updates(manual=True))
-        open_update_dir_button = QPushButton("打开更新目录")
-        open_update_dir_button.clicked.connect(self.open_update_dir)
-        update_actions.addWidget(check_update_button)
-        update_actions.addWidget(open_update_dir_button)
-        update_layout.addLayout(update_actions)
-        layout.addWidget(update_box)
-
-        save_button = QPushButton("保存飞书与限额配置")
-        save_button.clicked.connect(self.save_feishu_settings)
-        layout.addWidget(save_button)
         layout.addStretch()
         return page
 
     def build_browser(self) -> QWidget:
         right = QWidget()
+        right.setObjectName("RightShell")
         layout = QVBoxLayout(right)
         layout.setContentsMargins(0, 0, 0, 0)
-        top = QHBoxLayout()
+        outer = QFrame()
+        outer.setObjectName("BrowserCard")
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(16, 16, 16, 16)
+        outer_layout.setSpacing(14)
+        top_row = QWidget()
+        top_row.setObjectName("BrowserTopBar")
+        top = QHBoxLayout(top_row)
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(10)
         self.url_input = QLineEdit()
+        self.url_input.setObjectName("BrowserUrl")
         self.url_input.returnPressed.connect(lambda: self.navigate_boss(self.url_input.text()))
         go = QPushButton("前往")
+        go.setObjectName("PrimaryAction")
         go.clicked.connect(lambda: self.navigate_boss(self.url_input.text()))
-        top.addWidget(QLabel("BOSS 受控浏览器"))
+        browser_title = QLabel("BOSS 受控浏览器")
+        browser_title.setObjectName("BrowserTitle")
+        top.addWidget(browser_title)
         top.addWidget(self.url_input, 1)
         top.addWidget(go)
-        layout.addLayout(top)
+        outer_layout.addWidget(top_row)
         cleanup_windows_web_profile_locks()
         WEB_PROFILE_DIR.mkdir(exist_ok=True)
         (WEB_PROFILE_DIR / "storage").mkdir(parents=True, exist_ok=True)
@@ -8089,13 +8347,15 @@ class BossWorkbench(QMainWindow):
         self.browser_profile.setCachePath(str(WEB_PROFILE_DIR / "cache"))
         self.browser_profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
         self.browser = QWebEngineView()
+        self.browser.setObjectName("BrowserView")
         self.browser.setPage(QWebEnginePage(self.browser_profile, self.browser))
         self.browser.urlChanged.connect(lambda url: self.url_input.setText(url.toString()))
-        layout.addWidget(self.browser, 1)
+        outer_layout.addWidget(self.browser, 1)
         self.log_label = QLabel("系统就绪：等待用户选择扫描任务。")
         self.log_label.setWordWrap(True)
         self.log_label.setObjectName("Log")
-        layout.addWidget(self.log_label)
+        outer_layout.addWidget(self.log_label)
+        layout.addWidget(outer)
         return right
 
     def load_feishu_settings(self) -> None:
@@ -8164,16 +8424,14 @@ class BossWorkbench(QMainWindow):
             expire_text = "长期有效"
             if self.feishu_session.expires_at:
                 expire_text = datetime.fromtimestamp(self.feishu_session.expires_at).strftime("%Y-%m-%d %H:%M:%S")
-            identity = (
-                f"当前飞书用户：{self.feishu_session.name or '未命名用户'}"
-                f"\n邮箱：{self.feishu_session.email or '未返回'}"
-                f"\nOpenID：{self.feishu_session.open_id}"
-                f"\n会话到期：{expire_text}"
-            )
-            self.feishu_identity_label.setText(identity)
+            self.account_user_name_value.setText(self.feishu_session.name or "未命名用户")
+            self.account_user_email_value.setText(self.feishu_session.email or "未返回")
+            self.account_user_expiry_value.setText(expire_text)
             self.top_subtitle.setText(f"本地桌面客户端 · 飞书：{self.feishu_session.name or self.feishu_session.open_id}")
         else:
-            self.feishu_identity_label.setText("当前未登录飞书。")
+            self.account_user_name_value.setText("未登录")
+            self.account_user_email_value.setText("-")
+            self.account_user_expiry_value.setText("-")
             self.top_subtitle.setText("本地桌面客户端 · 飞书未登录")
 
     def ensure_feishu_session(self) -> bool:
@@ -8198,7 +8456,7 @@ class BossWorkbench(QMainWindow):
             self.refresh_usage_summary()
         except Exception as exc:
             write_runtime_error_log("reauth_refresh_usage_failed", {"open_id_suffix": self.feishu_session.open_id[-6:] if self.feishu_session.open_id else ""}, exc)
-            self.feishu_usage_label.setText("今日用量：飞书登录成功，但云端读取异常，已切换为本地统计。")
+            self.account_usage_quota_value.setText("云端读取异常，当前已切换为本地统计。")
         self.append_log(f"飞书登录成功：{self.feishu_session.name or self.feishu_session.open_id}")
         self.schedule_auto_update_check(delay_ms=1200)
         return True
@@ -8232,10 +8490,13 @@ class BossWorkbench(QMainWindow):
         self.append_log("人员额度表中的 token 用量已同步。")
 
     def refresh_usage_summary(self) -> None:
-        if not getattr(self, "feishu_usage_label", None):
+        if not getattr(self, "account_usage_requests_value", None):
             return
         if not self.feishu_session:
-            self.feishu_usage_label.setText("今日用量：未登录飞书，无法统计到个人维度。")
+            self.account_usage_requests_value.setText("-")
+            self.account_usage_tokens_value.setText("-")
+            self.account_usage_quota_value.setText("未登录飞书，暂时无法读取当前账号额度。")
+            self.account_usage_total_value.setText("-")
             return
         try:
             summary = self.usage_manager.usage_summary(self.feishu_session)
@@ -8245,34 +8506,30 @@ class BossWorkbench(QMainWindow):
                 {"open_id_suffix": self.feishu_session.open_id[-6:] if self.feishu_session.open_id else ""},
                 exc,
             )
-            self.feishu_usage_label.setText("今日用量：飞书统计加载失败，已自动降级为本地统计。")
+            self.account_usage_requests_value.setText("-")
+            self.account_usage_tokens_value.setText("-")
+            self.account_usage_quota_value.setText("token 用量读取失败，当前已自动降级为本地统计。")
+            self.account_usage_total_value.setText("-")
             return
         local = summary["local"]
         local_total = summary.get("local_total") or {}
         remote = summary.get("remote")
-        pieces = [
-            f"本地今日：{local['request_count']} 次请求，{local['total_tokens']} tokens",
-            f"prompt {local['prompt_tokens']} / completion {local['completion_tokens']}",
-        ]
-        if local.get("currency") or local.get("total_price"):
-            pieces.append(f"费用 {local['total_price']:.6f} {local.get('currency') or ''}".strip())
-        if local.get("estimated_count"):
-            pieces.append(f"其中 {local['estimated_count']} 次为估算值")
+        self.account_usage_requests_value.setText(f"{local['request_count']} 次")
+        self.account_usage_tokens_value.setText(str(local["total_tokens"]))
         if isinstance(remote, UserQuota):
-            pieces.append(
-                f"账户额度：已充值 {remote.recharge_tokens} / 已用 {remote.used_tokens} / 剩余 {remote.remaining_tokens}"
+            self.account_usage_quota_value.setText(
+                f"已充值 {remote.recharge_tokens} / 已用 {remote.used_tokens} / 剩余 {remote.remaining_tokens}"
             )
-            if remote.user_name:
-                pieces.append(f"飞书登记人员：{remote.user_name}")
         else:
-            pieces.append("飞书人员额度表：未配置、未登记或未同步")
+            self.account_usage_quota_value.setText("未配置、未登记或暂未同步")
         if local_total:
-            pieces.append(
-                f"本机累计：{safe_int(local_total.get('request_count'))} 次，{safe_int(local_total.get('total_tokens'))} tokens"
+            self.account_usage_total_value.setText(
+                f"{safe_int(local_total.get('request_count'))} 次请求 / {safe_int(local_total.get('total_tokens'))} tokens"
             )
+        else:
+            self.account_usage_total_value.setText("-")
         if summary.get("error"):
-            pieces.append(f"云端读取失败：{summary['error']}")
-        self.feishu_usage_label.setText("；".join(str(piece) for piece in pieces if piece))
+            self.account_usage_quota_value.setText(f"{self.account_usage_quota_value.text()}（{summary['error']}）")
 
     def notify_usage_blocked(self, reason: str) -> None:
         text = str(reason or "").strip()
@@ -8288,69 +8545,91 @@ class BossWorkbench(QMainWindow):
     def refresh_update_status(self, text: str | None = None) -> None:
         if text is not None:
             self.update_status_text = text
-        if not getattr(self, "update_status_label", None):
+        if not getattr(self, "account_version_status_value", None):
             return
-        channel = app_config_string("windows_update_channel", "stable").strip() or "stable"
-        manifest_url = app_config_string("windows_update_manifest_url", "").strip()
-        pieces = [
-            f"当前版本：{APP_VERSION}",
-            f"状态：{self.update_status_text}",
-            f"通道：{channel}",
-        ]
         if sys.platform.startswith("win"):
-            pieces.append("平台：Windows")
+            channel = app_config_string("windows_update_channel", "stable").strip() or "stable"
+        elif sys.platform == "darwin":
+            channel = app_config_string("macos_update_channel", "stable").strip() or "stable"
         else:
-            pieces.append("平台：非 Windows，当前更新器不生效")
-        pieces.append(f"清单：{manifest_url or '未配置'}")
-        self.update_status_label.setText("；".join(pieces))
+            channel = "stable"
+        self.account_version_current_value.setText(APP_VERSION)
+        self.account_version_status_value.setText(self.update_status_text)
+        self.account_version_channel_value.setText(channel)
+        if sys.platform.startswith("win"):
+            return
+        platform_text = "macOS" if sys.platform == "darwin" else sys.platform
+        self.account_version_status_value.setText(f"{self.update_status_text}（当前平台：{platform_text}）")
 
     def open_update_dir(self) -> None:
         UPDATE_DIR.mkdir(parents=True, exist_ok=True)
         open_local_path(UPDATE_DIR)
 
     def schedule_auto_update_check(self, delay_ms: int = 0) -> None:
-        if not sys.platform.startswith("win"):
+        if sys.platform.startswith("win"):
+            enabled = app_config_bool("windows_update_enabled", True)
+            auto_check = app_config_bool("windows_update_check_on_startup", True)
+        elif sys.platform == "darwin":
+            enabled = app_config_bool("macos_update_enabled", True)
+            auto_check = app_config_bool("macos_update_check_on_startup", True)
+        else:
             return
-        if not app_config_bool("windows_update_enabled", True):
+        if not enabled:
             return
-        if not app_config_bool("windows_update_check_on_startup", True):
+        if not auto_check:
             return
         if not self.feishu_session:
             return
         QTimer.singleShot(max(0, int(delay_ms)), lambda: self.check_for_updates(manual=False))
 
     def check_for_updates(self, manual: bool = True) -> None:
-        if not sys.platform.startswith("win"):
-            self.refresh_update_status("当前平台不是 Windows")
+        platform_name = ""
+        manifest_url = ""
+        channel = "stable"
+        timeout = 15
+        if sys.platform.startswith("win"):
+            platform_name = "Windows"
+            enabled = app_config_bool("windows_update_enabled", True)
+            manifest_url = app_config_string("windows_update_manifest_url", "").strip()
+            channel = app_config_string("windows_update_channel", "stable").strip() or "stable"
+            timeout = max(5, safe_int(app_config_string("windows_update_timeout_seconds", "15"), 15))
+        elif sys.platform == "darwin":
+            platform_name = "macOS"
+            enabled = app_config_bool("macos_update_enabled", True)
+            manifest_url = app_config_string("macos_update_manifest_url", "").strip()
+            channel = app_config_string("macos_update_channel", "stable").strip() or "stable"
+            timeout = max(5, safe_int(app_config_string("macos_update_timeout_seconds", "15"), 15))
+        else:
+            self.refresh_update_status("当前平台暂不支持在线更新")
             if manual:
-                QMessageBox.information(self, "检查更新", "当前只实现了 Windows 在线更新。")
+                QMessageBox.information(self, "检查更新", "当前平台暂不支持在线更新。")
             return
-        if not app_config_bool("windows_update_enabled", True):
+        if not enabled:
             self.refresh_update_status("已关闭在线更新")
             if manual:
-                QMessageBox.information(self, "检查更新", "当前配置已关闭 Windows 在线更新。")
+                QMessageBox.information(self, "检查更新", f"当前配置已关闭 {platform_name} 在线更新。")
             return
-        manifest_url = app_config_string("windows_update_manifest_url", "").strip()
         if not manifest_url:
             self.refresh_update_status("未配置更新清单")
             if manual:
-                QMessageBox.warning(self, "检查更新", "请先在配置文件或“飞书与用量”中填写 Windows 更新清单 URL。")
+                QMessageBox.warning(self, "检查更新", f"请先配置 {platform_name} 更新清单 URL。")
             return
         if self.update_check_in_flight:
             if manual:
                 QMessageBox.information(self, "检查更新", "已经在检查更新了，请稍等。")
             return
-        timeout = max(5, safe_int(app_config_string("windows_update_timeout_seconds", "15"), 15))
-        channel = app_config_string("windows_update_channel", "stable").strip() or "stable"
         self.update_check_in_flight = True
         self.refresh_update_status("正在检查更新")
-        self.append_log(f"开始检查 Windows 更新，通道：{channel}。")
+        self.append_log(f"开始检查 {platform_name} 更新，通道：{channel}。")
 
         def worker() -> None:
             info: UpdateInfo | None = None
             error: str | None = None
             try:
-                info = fetch_windows_update(manifest_url, APP_VERSION, channel=channel, timeout=timeout)
+                if sys.platform.startswith("win"):
+                    info = fetch_windows_update(manifest_url, APP_VERSION, channel=channel, timeout=timeout)
+                else:
+                    info = fetch_macos_update(manifest_url, APP_VERSION, channel=channel, timeout=timeout)
             except Exception as exc:
                 error = str(exc)
             self.update_bridge.check_finished.emit(info, error, manual)
@@ -8362,7 +8641,8 @@ class BossWorkbench(QMainWindow):
         if error:
             message = str(error)
             self.refresh_update_status(f"检查失败：{message}")
-            self.append_log(f"Windows 更新检查失败：{message}")
+            platform_name = "Windows" if sys.platform.startswith("win") else "macOS"
+            self.append_log(f"{platform_name} 更新检查失败：{message}")
             if manual:
                 QMessageBox.warning(self, "检查更新失败", message)
             return
@@ -8374,7 +8654,8 @@ class BossWorkbench(QMainWindow):
             return
         self.pending_update_info = info
         self.refresh_update_status(f"发现新版本 {info.version}")
-        self.append_log(f"发现 Windows 新版本 {info.version}，准备下载更新。")
+        platform_name = "Windows" if info.platform == "windows" else "macOS"
+        self.append_log(f"发现 {platform_name} 新版本 {info.version}，准备下载更新。")
         lines = [f"发现新版本：{info.version}"]
         if info.published_at:
             lines.append(f"发布时间：{info.published_at}")
@@ -8382,7 +8663,7 @@ class BossWorkbench(QMainWindow):
             lines.append("")
             lines.append(info.notes[:1200])
         lines.append("")
-        lines.append("现在下载并安装更新吗？")
+        lines.append("现在下载更新吗？" if info.platform == "macos" else "现在下载并安装更新吗？")
         reply = QMessageBox.question(self, "发现新版本", "\n".join(lines), QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
             self.download_update(info)
@@ -8391,16 +8672,20 @@ class BossWorkbench(QMainWindow):
         if self.update_download_in_flight:
             QMessageBox.information(self, "下载更新", "更新安装包正在下载，请稍等。")
             return
-        timeout = max(30, safe_int(app_config_string("windows_update_timeout_seconds", "15"), 15) * 4)
+        if info.platform == "windows":
+            timeout = max(30, safe_int(app_config_string("windows_update_timeout_seconds", "15"), 15) * 4)
+        else:
+            timeout = max(30, safe_int(app_config_string("macos_update_timeout_seconds", "15"), 15) * 4)
         self.update_download_in_flight = True
         self.refresh_update_status(f"正在下载 {info.version}")
-        self.append_log(f"开始下载 Windows 更新安装包：{info.version}")
+        platform_name = "Windows" if info.platform == "windows" else "macOS"
+        self.append_log(f"开始下载 {platform_name} 更新包：{info.version}")
 
         def worker() -> None:
             path_text = ""
             error: str | None = None
             try:
-                path = download_windows_installer(info, UPDATE_DIR / info.version, timeout=timeout)
+                path = download_update_package(info, UPDATE_DIR / info.version, timeout=timeout)
                 path_text = str(path)
             except Exception as exc:
                 error = str(exc)
@@ -8413,7 +8698,8 @@ class BossWorkbench(QMainWindow):
         if error:
             message = str(error)
             self.refresh_update_status(f"下载失败：{message}")
-            self.append_log(f"Windows 更新下载失败：{message}")
+            platform_name = "Windows" if isinstance(info, UpdateInfo) and info.platform == "windows" else "macOS"
+            self.append_log(f"{platform_name} 更新下载失败：{message}")
             QMessageBox.warning(self, "下载更新失败", message)
             return
         if not isinstance(info, UpdateInfo):
@@ -8421,27 +8707,48 @@ class BossWorkbench(QMainWindow):
             return
         installer_path = Path(str(path_text))
         self.refresh_update_status(f"已下载 {info.version}")
-        self.append_log(f"Windows 更新安装包已下载：{installer_path}")
+        platform_name = "Windows" if info.platform == "windows" else "macOS"
+        self.append_log(f"{platform_name} 更新包已下载：{installer_path}")
+        if info.platform == "windows":
+            reply = QMessageBox.question(
+                self,
+                "安装更新",
+                f"新版本 {info.version} 已下载完成。\n\n安装包位置：{installer_path}\n\n现在退出应用并启动安装器吗？",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                self.install_update(installer_path, info)
+            return
         reply = QMessageBox.question(
             self,
-            "安装更新",
-            f"新版本 {info.version} 已下载完成。\n\n安装包位置：{installer_path}\n\n现在退出应用并启动安装器吗？",
+            "打开更新包",
+            f"新版本 {info.version} 已下载完成。\n\n安装包位置：{installer_path}\n\n现在打开更新包吗？",
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
             self.install_update(installer_path, info)
 
     def install_update(self, installer_path: Path, info: UpdateInfo) -> None:
-        try:
-            launch_windows_installer(installer_path, info.installer_args)
-        except Exception as exc:
-            QMessageBox.warning(self, "启动安装器失败", str(exc))
+        if info.platform == "windows":
+            try:
+                launch_windows_installer(installer_path, info.launch_args)
+            except Exception as exc:
+                QMessageBox.warning(self, "启动安装器失败", str(exc))
+                return
+            self.refresh_update_status(f"准备安装 {info.version}")
+            self.append_log(f"即将退出并启动 Windows 安装器：{installer_path.name}")
+            app = QApplication.instance()
+            if app is not None:
+                QTimer.singleShot(200, app.quit)
             return
-        self.refresh_update_status(f"准备安装 {info.version}")
-        self.append_log(f"即将退出并启动 Windows 安装器：{installer_path.name}")
-        app = QApplication.instance()
-        if app is not None:
-            QTimer.singleShot(200, app.quit)
+        try:
+            open_macos_update_package(installer_path)
+        except Exception as exc:
+            QMessageBox.warning(self, "打开更新包失败", str(exc))
+            return
+        self.refresh_update_status(f"已打开更新包 {info.version}")
+        self.append_log(f"已打开 macOS 更新包：{installer_path.name}")
+        QMessageBox.information(self, "macOS 更新", f"已打开更新包：{installer_path.name}\n\n请按 macOS 常规方式完成安装或替换应用。")
 
     def refresh_job_selector(self) -> None:
         self.job_selector.blockSignals(True)
@@ -8575,7 +8882,8 @@ class BossWorkbench(QMainWindow):
         self.scan.start("inbound", indices, read_filter)
 
     def autoscan_once(self) -> None:
-        self.stack.setCurrentIndex(1)
+        self.set_current_page(0)
+        self.set_current_workbench_page(0)
         self.inbound_start.setValue(1)
         self.inbound_end.setValue(1)
         self.append_log("开发自测：自动执行 1 位投递人选扫描。")
@@ -8698,8 +9006,8 @@ class BossWorkbench(QMainWindow):
                     font.setUnderline(True)
                     item.setFont(font)
                     item.setForeground(Qt.GlobalColor.blue)
-                    item.setToolTip("点击打开源简历")
                     item.setData(Qt.ItemDataRole.UserRole, int(row["id"]))
+                    item.setToolTip("点击打开源简历")
                 self.pool_table.setItem(row_index, col, item)
             action_widget = QWidget()
             action_layout = QHBoxLayout(action_widget)
@@ -9502,32 +9810,386 @@ class BossWorkbench(QMainWindow):
     def apply_style(self) -> None:
         self.setStyleSheet(
             """
-            QMainWindow, QWidget { background: #f5f7f8; color: #15201d; font-size: 14px; }
-            QLabel { background: transparent; }
-            QLabel#Title { font-size: 24px; font-weight: 800; }
-            QLabel#Subtitle { color: #66736f; font-size: 12px; }
-            QLabel#Strong { font-size: 16px; font-weight: 800; }
-            QLabel#Score { font-size: 22px; font-weight: 900; color: #0a6c50; }
-            QLabel#Log { padding: 10px; background: white; border-top: 1px solid #d8e0de; color: #66736f; }
-            QPushButton { min-height: 34px; border-radius: 8px; padding: 0 12px; border: 1px solid #d8e0de; background: white; font-weight: 700; }
-            QPushButton:checked, QPushButton:hover { background: #0f8f68; color: white; border-color: #0f8f68; }
-            QPushButton#Danger { color: #b42318; background: #fff0ee; border-color: #ffd1cb; }
-            QPushButton#SubAction { min-height: 28px; padding: 0 10px; border-radius: 6px; color: #2f4a44; background: #f8fbfa; font-size: 12px; }
-            QPushButton#SubDanger { min-height: 28px; padding: 0 10px; border-radius: 6px; color: #b42318; background: #fff7f6; border-color: #ffd1cb; font-size: 12px; }
-            QPushButton#RowAction { min-height: 26px; padding: 0 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
-            QPushButton#RowDanger { min-height: 26px; padding: 0 8px; border-radius: 6px; color: #b42318; background: #fff7f6; border-color: #ffd1cb; font-size: 12px; font-weight: 600; }
-            QCheckBox { background: transparent; spacing: 8px; padding: 2px 0; font-weight: 700; color: #15201d; }
-            QCheckBox::indicator { width: 18px; height: 18px; border-radius: 5px; border: 1px solid #9fb4ad; background: white; }
-            QCheckBox::indicator:hover { border-color: #0f8f68; }
-            QCheckBox::indicator:checked { border-color: #0f8f68; background: #0f8f68; }
-            QComboBox, QLineEdit, QTextEdit, QSpinBox { border: 1px solid #d8e0de; border-radius: 8px; padding: 8px; background: white; }
-            QGroupBox, QFrame#Card, QFrame#Metric { border: 1px solid #d8e0de; border-radius: 8px; margin-top: 10px; padding: 12px; background: white; }
-            QFrame#SubToolbar { border: 1px solid #d8e0de; border-radius: 8px; background: white; }
-            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; font-weight: 800; }
-            QLabel#MetricValue { font-size: 30px; font-weight: 900; }
-            QTableWidget { background: white; border: 1px solid #d8e0de; border-radius: 8px; gridline-color: #e3e9e7; alternate-background-color: #f8fbfa; }
-            QHeaderView::section { background: #eef4f2; border: 0; padding: 8px; font-weight: 800; }
-            QToolBar { background: white; border-bottom: 1px solid #d8e0de; spacing: 8px; }
+            QMainWindow {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0c1413, stop:1 #131d1b);
+            }
+            QWidget {
+                color: #17211f;
+                font-size: 14px;
+            }
+            QLabel {
+                background: transparent;
+            }
+            QSplitter#WorkbenchSplitter::handle {
+                background: transparent;
+                width: 0px;
+            }
+            QWidget#LeftShell {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f3f7f5, stop:1 #e7efeb);
+                border: 1px solid rgba(20, 39, 34, 0.10);
+                border-radius: 26px;
+            }
+            QWidget#RightShell {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #172321, stop:1 #0f1817);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 26px;
+            }
+            QLabel#Title {
+                font-size: 30px;
+                font-weight: 900;
+                letter-spacing: -0.03em;
+            }
+            QLabel#SectionIntro {
+                color: #243733;
+                font-size: 15px;
+                font-weight: 800;
+                padding-bottom: 2px;
+            }
+            QLabel#Subtitle {
+                color: #697873;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QLabel#Strong {
+                font-size: 17px;
+                font-weight: 800;
+            }
+            QLabel#Score {
+                font-size: 26px;
+                font-weight: 900;
+                color: #0f7657;
+            }
+            QLabel#MetricValue {
+                font-size: 38px;
+                font-weight: 900;
+                color: #17211f;
+            }
+            QComboBox, QLineEdit, QTextEdit, QSpinBox {
+                border: 1px solid #d6e0db;
+                border-radius: 14px;
+                padding: 10px 12px;
+                background: rgba(255, 255, 255, 0.92);
+                selection-background-color: #0f8f68;
+            }
+            QAbstractSpinBox::up-button,
+            QAbstractSpinBox::down-button {
+                width: 22px;
+                border: none;
+                background: transparent;
+            }
+            QAbstractSpinBox::up-arrow,
+            QAbstractSpinBox::down-arrow {
+                width: 10px;
+                height: 10px;
+            }
+            QComboBox#JobSelector {
+                min-height: 46px;
+                border-radius: 14px;
+                font-weight: 700;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 26px;
+            }
+            QComboBox QAbstractItemView {
+                background: white;
+                border: 1px solid #d6e0db;
+                selection-background-color: #0f8f68;
+                selection-color: white;
+            }
+            QPushButton {
+                min-height: 38px;
+                border-radius: 14px;
+                padding: 0 14px;
+                border: 1px solid #d6e0db;
+                background: rgba(255, 255, 255, 0.84);
+                color: #17211f;
+                font-weight: 800;
+            }
+            QPushButton:hover {
+                border-color: #a3b6b0;
+                background: white;
+            }
+            QPushButton:checked {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #117a59, stop:1 #0c5b44);
+                color: white;
+                border-color: #117a59;
+            }
+            QWidget#NavBlock QPushButton {
+                min-height: 44px;
+                border-radius: 14px;
+                background: rgba(255, 255, 255, 0.72);
+            }
+            QWidget#NavBlock QPushButton:hover {
+                background: white;
+            }
+            QWidget#NavBlock QPushButton:checked {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #117a59, stop:1 #0c5b44);
+                color: white;
+                border-color: #117a59;
+            }
+            QPushButton#PrimaryAction {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #117a59, stop:1 #0c5b44);
+                color: white;
+                border-color: #117a59;
+            }
+            QPushButton#PrimaryAction:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #149268, stop:1 #0f6b50);
+                border-color: #149268;
+            }
+            QPushButton#Danger {
+                color: #b42318;
+                background: #fff1ef;
+                border-color: #ffd4ce;
+            }
+            QPushButton#SubAction {
+                min-height: 30px;
+                padding: 0 12px;
+                border-radius: 10px;
+                color: #2b4740;
+                background: #f8fbfa;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QPushButton#SubDanger {
+                min-height: 30px;
+                padding: 0 12px;
+                border-radius: 10px;
+                color: #b42318;
+                background: #fff7f6;
+                border-color: #ffd4ce;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QPushButton#RowAction {
+                min-height: 28px;
+                padding: 0 10px;
+                border-radius: 10px;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QPushButton#RowDanger {
+                min-height: 28px;
+                padding: 0 10px;
+                border-radius: 10px;
+                color: #b42318;
+                background: #fff7f6;
+                border-color: #ffd4ce;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QCheckBox {
+                background: transparent;
+                spacing: 8px;
+                padding: 2px 0;
+                font-weight: 700;
+                color: #17211f;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 1px solid #9eb2ab;
+                background: white;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #117a59;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #117a59;
+                background: #117a59;
+            }
+            QStackedWidget#PageStack,
+            QWidget#PagePanel,
+            QScrollArea#PageScroll,
+            QScrollArea#PageScroll > QWidget > QWidget {
+                background: transparent;
+                border: none;
+            }
+            QScrollArea#PageScroll {
+                padding: 0;
+            }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 10px;
+                margin: 4px 2px 4px 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(42, 69, 61, 0.34);
+                min-height: 56px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(17, 122, 89, 0.56);
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical,
+            QScrollBar::up-arrow:vertical,
+            QScrollBar::down-arrow:vertical,
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {
+                background: transparent;
+                border: none;
+                height: 0px;
+            }
+            QScrollBar:horizontal {
+                background: transparent;
+                height: 10px;
+                margin: 2px 4px 2px 4px;
+            }
+            QScrollBar::handle:horizontal {
+                background: rgba(42, 69, 61, 0.26);
+                min-width: 56px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: rgba(17, 122, 89, 0.46);
+            }
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal,
+            QScrollBar::left-arrow:horizontal,
+            QScrollBar::right-arrow:horizontal,
+            QScrollBar::add-page:horizontal,
+            QScrollBar::sub-page:horizontal {
+                background: transparent;
+                border: none;
+                width: 0px;
+            }
+            QScrollArea#PageScroll QScrollBar:vertical {
+                width: 8px;
+                margin: 6px 2px 6px 0;
+            }
+            QScrollArea#PageScroll QScrollBar::handle:vertical {
+                background: rgba(35, 59, 53, 0.28);
+                border-radius: 4px;
+                min-height: 64px;
+            }
+            QScrollArea#PageScroll QScrollBar::handle:vertical:hover {
+                background: rgba(15, 143, 104, 0.48);
+            }
+            QFrame#Card,
+            QFrame#Metric,
+            QFrame#SubToolbar {
+                border: 1px solid #d8e2dd;
+                border-radius: 18px;
+                background: rgba(255, 255, 255, 0.88);
+            }
+            QGroupBox {
+                border: 1px solid #d8e2dd;
+                border-radius: 18px;
+                margin-top: 8px;
+                padding-top: 10px;
+                background: rgba(255, 255, 255, 0.88);
+            }
+            QFrame#Metric {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(255,255,255,0.96), stop:1 rgba(247,250,248,0.90));
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 14px;
+                padding: 0 4px;
+                color: #697873;
+                font-size: 12px;
+                font-weight: 800;
+                letter-spacing: 0.08em;
+            }
+            QGroupBox#AccountCard {
+                border: 1px solid #d1ddd7;
+                border-radius: 16px;
+                margin-top: 10px;
+                padding: 14px 0 0 0;
+                background: rgba(255,255,255,0.96);
+            }
+            QGroupBox#AccountCard::title {
+                color: #1f312c;
+                font-size: 14px;
+                font-weight: 900;
+                letter-spacing: 0.02em;
+            }
+            QLabel#AccountFieldLabel {
+                color: #72817c;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QLabel#AccountFieldValue {
+                color: #18332b;
+                font-size: 14px;
+                font-weight: 800;
+            }
+            QPushButton#AccountSecondaryAction {
+                min-height: 38px;
+                border-radius: 12px;
+                font-size: 13px;
+                font-weight: 800;
+                padding: 0 14px;
+                background: #ffffff;
+                color: #20332d;
+                border: 1px solid #d6e1dc;
+            }
+            QPushButton#AccountSecondaryAction:hover {
+                border-color: #b8c9c2;
+                background: #fbfcfc;
+            }
+            QWidget#RightShell QGroupBox,
+            QWidget#RightShell QFrame#Card,
+            QWidget#RightShell QFrame#Metric,
+            QWidget#RightShell QFrame#SubToolbar {
+                background: rgba(255, 255, 255, 0.92);
+            }
+            QFrame#Card QLabel#Subtitle,
+            QGroupBox QLabel#Subtitle {
+                color: #6b7a75;
+            }
+            QTableWidget {
+                background: rgba(255, 255, 255, 0.92);
+                border: 1px solid #d8e2dd;
+                border-radius: 18px;
+                gridline-color: #e4ebe8;
+                alternate-background-color: #f8fbfa;
+                padding: 4px;
+            }
+            QHeaderView::section {
+                background: #edf3f0;
+                border: 0;
+                padding: 10px 8px;
+                font-weight: 800;
+                color: #324842;
+            }
+            QWidget#BrowserCard {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 22px;
+            }
+            QWidget#BrowserTopBar {
+                background: transparent;
+            }
+            QLabel#BrowserTitle {
+                color: #f4f8f6;
+                font-size: 18px;
+                font-weight: 800;
+            }
+            QLineEdit#BrowserUrl {
+                min-height: 44px;
+                background: rgba(255, 255, 255, 0.10);
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                color: #f4f8f6;
+                border-radius: 14px;
+            }
+            QWebEngineView#BrowserView {
+                border-radius: 18px;
+                background: white;
+            }
+            QLabel#Log {
+                padding: 12px 14px;
+                border-radius: 14px;
+                background: rgba(255, 255, 255, 0.88);
+                color: #5f716c;
+                border: 1px solid #d8e2dd;
+            }
+            QStatusBar {
+                background: rgba(255, 255, 255, 0.92);
+                color: #5f716c;
+            }
             """
         )
 
