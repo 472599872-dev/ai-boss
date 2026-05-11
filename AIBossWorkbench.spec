@@ -8,6 +8,8 @@ datas_qtwe_widgets, binaries_qtwe_widgets, hiddenimports_qtwe_widgets = collect_
 extra_datas = [("app_version.txt", ".")]
 if os.path.exists("app_config.json"):
     extra_datas.append(("app_config.json", "."))
+if os.path.exists("assets/app-icon/app-icon-v1-preview.png"):
+    extra_datas.append(("assets/app-icon/app-icon-v1-preview.png", "assets/app-icon"))
 
 a = Analysis(
     ["main.py"],
@@ -52,6 +54,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="AIBossWorkbench.app",
-    icon=None,
+    icon="assets/app-icon/app-icon.icns" if os.path.exists("assets/app-icon/app-icon.icns") else None,
     bundle_identifier="com.mova.aibossworkbench",
 )

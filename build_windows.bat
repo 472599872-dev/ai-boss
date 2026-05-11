@@ -41,7 +41,16 @@ if exist app_config.json (
 ) else (
   echo app_config.json not found. Installer will fall back to default empty config.
 )
-call .venv\Scripts\pyinstaller.exe --noconfirm --windowed --name "AIBossWorkbench" !ADD_DATA_ARGS! main.py
+if exist assets\app-icon\app-icon-v1-preview.png (
+  echo Packaging runtime app icon preview...
+  set ADD_DATA_ARGS=!ADD_DATA_ARGS! --add-data "assets\app-icon\app-icon-v1-preview.png;assets/app-icon"
+)
+set ICON_ARG=
+if exist assets\app-icon\app-icon.ico (
+  echo Using Windows app icon...
+  set ICON_ARG=--icon "assets\app-icon\app-icon.ico"
+)
+call .venv\Scripts\pyinstaller.exe --noconfirm --windowed --name "AIBossWorkbench" !ADD_DATA_ARGS! !ICON_ARG! main.py
 if errorlevel 1 goto :err
 
 echo [5/6] Zip distribution...

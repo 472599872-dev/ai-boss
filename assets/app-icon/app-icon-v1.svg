@@ -1,0 +1,99 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="140" y1="96" x2="878" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#12342E"/>
+      <stop offset="0.56" stop-color="#0E5B4D"/>
+      <stop offset="1" stop-color="#0A7B65"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="276" y1="210" x2="760" y2="788" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FCFB" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#DCEDE8" stop-opacity="0.76"/>
+    </linearGradient>
+    <linearGradient id="card" x1="290" y1="278" x2="732" y2="714" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0D3A33"/>
+      <stop offset="1" stop-color="#124A40"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="615" y1="614" x2="748" y2="741" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F4D38E"/>
+      <stop offset="1" stop-color="#C89B46"/>
+    </linearGradient>
+    <filter id="shadowOuter" x="84" y="76" width="856" height="900" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="26"/>
+      <feGaussianBlur stdDeviation="28"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.027451 0 0 0 0 0.152941 0 0 0 0 0.12549 0 0 0 0.28 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+    <filter id="shadowInner" x="218" y="164" width="588" height="702" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="18"/>
+      <feGaussianBlur stdDeviation="20"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0222932 0 0 0 0 0.172549 0 0 0 0 0.145098 0 0 0 0.26 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(749 261) rotate(141.693) scale(320.681)">
+      <stop stop-color="#DDFCF2" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#DDFCF2" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="clipBg">
+      <rect x="112" y="96" width="800" height="832" rx="188"/>
+    </clipPath>
+  </defs>
+
+  <g filter="url(#shadowOuter)">
+    <rect x="112" y="96" width="800" height="832" rx="188" fill="url(#bg)"/>
+    <g clip-path="url(#clipBg)">
+      <circle cx="766" cy="250" r="258" fill="url(#glow)"/>
+      <path d="M58 728C229 620 383 594 522 636C626 666 734 739 932 902V986H58V728Z" fill="#0B493E" fill-opacity="0.56"/>
+      <path d="M28 812C218 706 394 678 556 716C677 745 792 815 984 958V1022H28V812Z" fill="#072A24" fill-opacity="0.28"/>
+      <g opacity="0.12">
+        <path d="M190 192H834" stroke="#E7FFFA" stroke-width="3" stroke-linecap="round"/>
+        <path d="M190 262H834" stroke="#E7FFFA" stroke-width="3" stroke-linecap="round"/>
+        <path d="M190 332H834" stroke="#E7FFFA" stroke-width="3" stroke-linecap="round"/>
+        <path d="M190 402H834" stroke="#E7FFFA" stroke-width="3" stroke-linecap="round"/>
+        <path d="M190 472H834" stroke="#E7FFFA" stroke-width="3" stroke-linecap="round"/>
+        <path d="M190 542H834" stroke="#E7FFFA" stroke-width="3" stroke-linecap="round"/>
+        <path d="M190 612H834" stroke="#E7FFFA" stroke-width="3" stroke-linecap="round"/>
+        <path d="M190 682H834" stroke="#E7FFFA" stroke-width="3" stroke-linecap="round"/>
+        <path d="M190 752H834" stroke="#E7FFFA" stroke-width="3" stroke-linecap="round"/>
+      </g>
+    </g>
+  </g>
+
+  <g filter="url(#shadowInner)">
+    <rect x="242" y="186" width="540" height="646" rx="128" fill="url(#glass)"/>
+    <rect x="266" y="210" width="492" height="598" rx="110" fill="#FFFFFF" fill-opacity="0.08" stroke="#E6FBF5" stroke-opacity="0.28" stroke-width="3"/>
+  </g>
+
+  <rect x="306" y="286" width="412" height="376" rx="80" fill="url(#card)"/>
+  <rect x="336" y="320" width="352" height="62" rx="31" fill="#DFF5EE" fill-opacity="0.10"/>
+  <circle cx="388" cy="351" r="18" fill="#A4E5D1"/>
+  <rect x="424" y="337" width="170" height="14" rx="7" fill="#E9FFFA" fill-opacity="0.90"/>
+  <rect x="424" y="360" width="118" height="10" rx="5" fill="#BDE8DA" fill-opacity="0.72"/>
+
+  <rect x="336" y="428" width="258" height="20" rx="10" fill="#E9FFFA" fill-opacity="0.92"/>
+  <rect x="336" y="468" width="210" height="18" rx="9" fill="#C6EEE0" fill-opacity="0.72"/>
+  <rect x="336" y="507" width="236" height="18" rx="9" fill="#C6EEE0" fill-opacity="0.72"/>
+  <rect x="336" y="546" width="188" height="18" rx="9" fill="#C6EEE0" fill-opacity="0.72"/>
+
+  <g>
+    <circle cx="646" cy="580" r="84" fill="#123B34"/>
+    <circle cx="646" cy="580" r="65" stroke="#BFE7D9" stroke-width="10" stroke-opacity="0.9"/>
+    <circle cx="646" cy="580" r="13" fill="#EAFBF6"/>
+    <path d="M701 642L751 692" stroke="url(#gold)" stroke-width="28" stroke-linecap="round"/>
+    <circle cx="646" cy="580" r="92" stroke="url(#gold)" stroke-width="12" stroke-opacity="0.88"/>
+  </g>
+
+  <g opacity="0.92">
+    <rect x="336" y="714" width="128" height="24" rx="12" fill="#EAFBF6"/>
+    <rect x="478" y="714" width="96" height="24" rx="12" fill="#CDEFE3" fill-opacity="0.86"/>
+    <rect x="588" y="714" width="84" height="24" rx="12" fill="#CDEFE3" fill-opacity="0.64"/>
+  </g>
+
+  <circle cx="770" cy="254" r="18" fill="#F7D998" fill-opacity="0.96"/>
+  <circle cx="770" cy="254" r="36" stroke="#F7D998" stroke-opacity="0.32" stroke-width="6"/>
+</svg>

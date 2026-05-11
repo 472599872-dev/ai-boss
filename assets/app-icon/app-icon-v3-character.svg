@@ -1,0 +1,90 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="128" y1="108" x2="886" y2="926" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#179177"/>
+      <stop offset="1" stop-color="#0D5A4B"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(758 238) rotate(138.366) scale(292.723)">
+      <stop stop-color="#CFFFF0" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#CFFFF0" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hair" x1="382" y1="246" x2="630" y2="476" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1A3E39"/>
+      <stop offset="1" stop-color="#0B2722"/>
+    </linearGradient>
+    <linearGradient id="skin" x1="386" y1="318" x2="600" y2="618" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF2E2"/>
+      <stop offset="1" stop-color="#FFD9BF"/>
+    </linearGradient>
+    <linearGradient id="hoodie" x1="296" y1="548" x2="666" y2="846" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FFFC"/>
+      <stop offset="1" stop-color="#D7F2E9"/>
+    </linearGradient>
+    <linearGradient id="hoodieShade" x1="360" y1="598" x2="664" y2="870" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#CAEBDD"/>
+      <stop offset="1" stop-color="#A9D9C9"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="562" y1="432" x2="804" y2="664" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFE08F"/>
+      <stop offset="1" stop-color="#F0B64A"/>
+    </linearGradient>
+    <filter id="shadow" x="82" y="80" width="860" height="900" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="28"/>
+      <feGaussianBlur stdDeviation="30"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.03 0 0 0 0 0.17 0 0 0 0 0.14 0 0 0 0.24 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <rect x="112" y="96" width="800" height="832" rx="192" fill="url(#bg)"/>
+    <circle cx="766" cy="242" r="250" fill="url(#glow)"/>
+    <path d="M112 792C252 690 392 648 532 666C668 684 796 762 912 916V928H112V792Z" fill="#0A4D41" fill-opacity="0.34"/>
+    <path d="M160 278C286 224 434 220 548 266" stroke="#E5FFF8" stroke-opacity="0.16" stroke-width="10" stroke-linecap="round"/>
+    <path d="M166 330C274 286 398 280 494 312" stroke="#E5FFF8" stroke-opacity="0.14" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 380C258 346 356 342 432 360" stroke="#E5FFF8" stroke-opacity="0.12" stroke-width="7" stroke-linecap="round"/>
+  </g>
+
+  <g>
+    <path d="M376 282C397 228 444 198 508 198C575 198 626 230 648 292C660 328 648 368 616 396C593 416 562 428 526 428C457 428 405 404 381 360C369 338 367 309 376 282Z" fill="url(#hair)"/>
+    <ellipse cx="512" cy="382" rx="158" ry="180" fill="url(#skin)"/>
+    <path d="M402 328C414 290 449 262 492 262H536C588 262 630 301 636 352L646 428C650 488 603 540 542 540H482C421 540 374 488 378 428L402 328Z" fill="url(#skin)"/>
+    <path d="M392 354C398 292 445 246 504 246H548C586 246 621 264 642 293C627 273 602 262 576 262H468C438 262 410 278 392 304V354Z" fill="#FFE8D4"/>
+    <circle cx="452" cy="394" r="13" fill="#193C36"/>
+    <circle cx="556" cy="394" r="13" fill="#193C36"/>
+    <ellipse cx="420" cy="430" rx="18" ry="12" fill="#F6BCAF" fill-opacity="0.72"/>
+    <ellipse cx="588" cy="430" rx="18" ry="12" fill="#F6BCAF" fill-opacity="0.72"/>
+    <path d="M472 460C488 476 502 482 514 482C526 482 540 476 556 460" stroke="#193C36" stroke-width="12" stroke-linecap="round"/>
+    <path d="M422 348C434 333 451 326 472 326" stroke="#193C36" stroke-width="12" stroke-linecap="round"/>
+    <path d="M536 326C557 326 574 333 586 348" stroke="#193C36" stroke-width="12" stroke-linecap="round"/>
+  </g>
+
+  <g>
+    <path d="M278 742C286 624 364 552 474 552H548C670 552 748 634 748 760V796H278V742Z" fill="url(#hoodie)"/>
+    <path d="M330 796C342 696 404 632 494 632H540C622 632 684 688 700 796H330Z" fill="url(#hoodieShade)"/>
+    <path d="M474 560L420 652C402 682 424 718 458 718H478L468 796H560L548 718H568C602 718 624 682 606 652L552 560H474Z" fill="#F6FFFB"/>
+    <path d="M456 588L432 630" stroke="#AEDCCD" stroke-width="10" stroke-linecap="round"/>
+    <path d="M570 588L594 630" stroke="#AEDCCD" stroke-width="10" stroke-linecap="round"/>
+    <rect x="416" y="722" width="190" height="18" rx="9" fill="#BDE3D5" fill-opacity="0.72"/>
+  </g>
+
+  <g>
+    <path d="M638 520C638 452 693 397 761 397C829 397 884 452 884 520C884 588 829 643 761 643C693 643 638 588 638 520Z" fill="#13423B"/>
+    <circle cx="761" cy="520" r="96" fill="#0E5B4D" stroke="url(#gold)" stroke-width="16"/>
+    <circle cx="761" cy="520" r="70" fill="#114138" stroke="#E7FFF8" stroke-width="12"/>
+    <circle cx="761" cy="520" r="17" fill="#F9FFFC"/>
+    <path d="M826 586L880 640" stroke="url(#gold)" stroke-width="32" stroke-linecap="round"/>
+  </g>
+
+  <g>
+    <path d="M638 520C638 452 693 397 761 397C778 397 794 400 809 406C760 434 726 484 726 542C726 577 738 608 758 632C690 631 638 576 638 520Z" fill="#CFFFF0" fill-opacity="0.16"/>
+  </g>
+
+  <g>
+    <circle cx="762" cy="244" r="18" fill="#FFE08F"/>
+    <circle cx="762" cy="244" r="36" stroke="#FFE08F" stroke-opacity="0.28" stroke-width="6"/>
+  </g>
+</svg>

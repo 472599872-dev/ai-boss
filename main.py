@@ -37,6 +37,7 @@ from typing import Any, Iterable
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWidgets import (
     QApplication,
@@ -74,6 +75,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 APP_ID = "AIBossWorkbench"
 APP_NAME = "AI 招聘工作台"
 VERSION_FILE_NAME = "app_version.txt"
+APP_ICON_PREVIEW_PATH = "assets/app-icon/app-icon-v1-preview.png"
 
 
 def packaged_resource_roots() -> list[Path]:
@@ -136,6 +138,16 @@ def resolve_existing_path(value: str) -> Path | None:
         if resolved.exists() and resolved.is_file():
             return resolved
     return None
+
+
+def load_app_icon() -> QIcon | None:
+    icon_path = find_packaged_resource(APP_ICON_PREVIEW_PATH)
+    if not icon_path:
+        return None
+    icon = QIcon(str(icon_path))
+    if icon.isNull():
+        return None
+    return icon
 
 
 def read_app_version(default: str = "1.0.0") -> str:
@@ -10346,6 +10358,9 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    app_icon = load_app_icon()
+    if app_icon:
+        app.setWindowIcon(app_icon)
 
     def _handle_uncaught_exception(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
         if issubclass(exc_type, KeyboardInterrupt):
@@ -10402,6 +10417,8 @@ def main() -> int:
             f"应用启动失败，已自动清理本次飞书登录缓存。\n\n请重新打开应用再登录。\n\n错误日志：{RUNTIME_ERROR_LOG_PATH}",
         )
         return 1
+    if app_icon:
+        window.setWindowIcon(app_icon)
     window.show()
     return app.exec()
 
