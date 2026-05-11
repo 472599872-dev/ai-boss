@@ -3584,6 +3584,13 @@ class ScanController:
             f"第 {self.current}/{len(self.queue)} 位 · 定位候选人",
             len(self.queue),
         )
+        if self.mode == "search":
+            self.app.ensure_search_page(
+                lambda index=index: self._locate_search_candidate(index),
+                on_failed=self.on_search_page_guard_failed,
+                reason=f"定位第 {index} 位候选人前",
+            )
+            return
         self.app.append_log(f"正在从 BOSS 页面定位第 {index} 位候选人。")
         if self.mode == "outbound":
             self.app.browser.page().runJavaScript(
@@ -3601,6 +3608,18 @@ class ScanController:
             self.json_script(self.locate_candidate_script(index, self.read_filter)),
             self.on_candidate_located,
         )
+
+    def _locate_search_candidate(self, index: int) -> None:
+        self.app.append_log(f"正在从 BOSS 页面定位第 {index} 位候选人。")
+        self.app.browser.page().runJavaScript(
+            self.json_script(self.locate_search_candidate_script(index)),
+            self.on_candidate_located,
+        )
+
+    def on_search_page_guard_failed(self) -> None:
+        self.failed += 1
+        self.app.append_log(f"第 {self.pending_index} 位读取失败：无法自动回到 BOSS 搜索页。")
+        self.after_current_item()
 
     def on_candidate_located(self, result: Any) -> None:
         payload = self.parse_js_payload(result)
@@ -8159,6 +8178,7 @@ class BossWorkbench(QMainWindow):
     def build_pool(self) -> QWidget:
         page = QWidget()
         page.setObjectName("PagePanel")
+        page.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
@@ -8182,14 +8202,26 @@ class BossWorkbench(QMainWindow):
         tools.addWidget(score)
         tools.addWidget(clear)
         layout.addWidget(tools_frame)
+        table_frame = QFrame()
+        table_frame.setObjectName("Card")
+        table_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        table_layout = QVBoxLayout(table_frame)
+        table_layout.setContentsMargins(14, 14, 14, 14)
+        table_layout.setSpacing(0)
         self.pool_table = QTableWidget(0, 9)
         self.pool_table.setHorizontalHeaderLabels(
             ["姓名", "方向", "分数", "状态", "来源", "第几位", "已读", "简历", "动作"]
         )
         self.pool_table.verticalHeader().setVisible(False)
         self.pool_table.setAlternatingRowColors(True)
+        self.pool_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.pool_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.pool_table.setMinimumHeight(430)
+        self.pool_table.setMaximumHeight(430)
         self.pool_table.cellClicked.connect(self.on_pool_cell_clicked)
-        layout.addWidget(self.pool_table)
+        table_layout.addWidget(self.pool_table)
+        layout.addWidget(table_frame)
+        layout.addStretch()
         return page
 
     def build_job_config(self) -> QWidget:
@@ -9007,15 +9039,19 @@ class BossWorkbench(QMainWindow):
     def start_search(self) -> None:
         if not self.ensure_feishu_session():
             return
-        current_url = self.browser.url().toString()
-        should_navigate = "zhipin.com/web/chat/search" not in current_url
-        if should_navigate:
-            self.navigate_boss("https://www.zhipin.com/web/chat/search")
         self.append_log(f"准备读取 BOSS 搜索找人列表。仅做扫描评估，阈值 {self.search_score_threshold.value()}，目标 {self.search_limit.value()} 位。")
-        delay = 2600 if should_navigate else 500
-        QTimer.singleShot(delay, self.prepare_search_scan)
+        self.ensure_search_page(
+            self.prepare_search_scan,
+            reason="开始搜索扫描前",
+        )
 
     def prepare_search_scan(self, attempt: int = 1) -> None:
+        if not self.is_search_page_url(self.browser.url().toString()):
+            self.ensure_search_page(
+                lambda attempt=attempt: self.prepare_search_scan(attempt),
+                reason=f"读取搜索列表前（第 {attempt} 次）",
+            )
+            return
         self.browser.page().runJavaScript(
             self.scan.json_script(self.scan.search_candidate_count_script()),
             lambda result, attempt=attempt: self.on_search_counted(result, attempt),
@@ -9049,6 +9085,41 @@ class BossWorkbench(QMainWindow):
         else:
             self.append_log(f"搜索页识别到 {count} 位人选；已凑满目标数量，本次扫描前 {limit} 位。")
         self.scan.start("search", list(range(1, limit + 1)))
+
+    @staticmethod
+    def is_search_page_url(url: str) -> bool:
+        current = str(url or "").strip().lower()
+        return ("zhipin.com/web/chat/search" in current) or ("zhipin.com/web/frame/search" in current)
+
+    def ensure_search_page(
+        self,
+        on_ready: callable,
+        on_failed: callable | None = None,
+        reason: str = "",
+        attempt: int = 1,
+    ) -> None:
+        current_url = self.browser.url().toString()
+        if self.is_search_page_url(current_url):
+            on_ready()
+            return
+        if attempt > 3:
+            self.append_log("搜索页自动跳转失败：右侧页面未能回到 BOSS 搜索页。")
+            if on_failed:
+                on_failed()
+            return
+        context = f"{reason}，" if reason else ""
+        self.append_log(f"{context}检测到右侧当前不在搜索页，正在自动跳转到正确页面（第 {attempt}/3 次）。")
+        self.navigate_boss("https://www.zhipin.com/web/chat/search")
+        delay = 2600 if attempt == 1 else 1800
+        QTimer.singleShot(
+            delay,
+            lambda on_ready=on_ready, on_failed=on_failed, reason=reason, attempt=attempt + 1: self.ensure_search_page(
+                on_ready,
+                on_failed=on_failed,
+                reason=reason,
+                attempt=attempt,
+            ),
+        )
 
     def scroll_search_results(self) -> None:
         self.browser.page().runJavaScript(
