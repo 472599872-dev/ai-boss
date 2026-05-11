@@ -140,6 +140,54 @@ def resolve_existing_path(value: str) -> Path | None:
     return None
 
 
+def resolve_system_ca_bundle_path() -> Path | None:
+    verify_paths = ssl.get_default_verify_paths()
+    candidates: list[str] = []
+    if verify_paths.cafile:
+        candidates.append(verify_paths.cafile)
+    if sys.platform == "darwin":
+        candidates.extend(
+            [
+                "/private/etc/ssl/cert.pem",
+                "/etc/ssl/cert.pem",
+            ]
+        )
+    for raw in candidates:
+        path = resolve_existing_path(raw)
+        if path is not None:
+            return path
+    return None
+
+
+def build_ssl_context_with_bundles(
+    custom_bundle_value: str = "",
+    *,
+    custom_bundle_label: str = "自定义证书",
+) -> tuple[ssl.SSLContext, Path | None, Path | None]:
+    system_bundle = resolve_system_ca_bundle_path()
+    custom_bundle = resolve_existing_path(custom_bundle_value)
+    context = ssl.create_default_context(cafile=str(system_bundle) if system_bundle else None)
+    if custom_bundle is not None:
+        try:
+            context.load_verify_locations(cafile=str(custom_bundle))
+        except ssl.SSLError as exc:
+            raise IntegrationError(f"{custom_bundle_label}无效：{custom_bundle}") from exc
+        except OSError as exc:
+            raise IntegrationError(f"无法读取{custom_bundle_label}：{custom_bundle}") from exc
+    return context, system_bundle, custom_bundle
+
+
+def write_app_scan_log(event: str, payload: dict[str, Any] | None = None) -> None:
+    LOG_DIR.mkdir(exist_ok=True)
+    record = {
+        "time": datetime.now().isoformat(timespec="milliseconds"),
+        "event": str(event or "").strip() or "unknown",
+        "payload": payload or {},
+    }
+    with LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+
 def load_app_icon() -> QIcon | None:
     icon_path = find_packaged_resource(APP_ICON_PREVIEW_PATH)
     if not icon_path:
@@ -352,6 +400,7 @@ DEFAULT_APP_CONFIG = {
     "feishu_usage_field_mapping": DEFAULT_FEISHU_FIELD_MAPPING,
     "llm_bridge_url": "https://ai-it.mova-tech.com/api/hr/resume/screening",
     "llm_bridge_timeout_seconds": 60,
+    "llm_bridge_ca_bundle_path": "",
     "dify_api_key": "",
     "llm_bridge_auth_header": "",
     "llm_bridge_auth_token": "",
@@ -2868,6 +2917,7 @@ class CandidateExtractor:
     _dify_timeout = 60
     _bridge_auth_header = ""
     _bridge_auth_token = ""
+    _bridge_ca_bundle_path = ""
 
     @staticmethod
     def from_page_payload(
@@ -3171,6 +3221,13 @@ class CandidateExtractor:
         key = app_config_string("dify_api_key", "").strip() or os.getenv("DIFY_API_KEY", "").strip()
         auth_header = app_config_string("llm_bridge_auth_header", "").strip() or os.getenv("LLM_BRIDGE_AUTH_HEADER", "").strip()
         auth_token = app_config_string("llm_bridge_auth_token", "").strip() or os.getenv("LLM_BRIDGE_AUTH_TOKEN", "").strip()
+        ca_bundle_path = (
+            app_config_string("llm_bridge_ca_bundle_path", "").strip()
+            or app_config_string("feishu_ca_bundle_path", "").strip()
+            or os.getenv("LLM_BRIDGE_CA_BUNDLE_PATH", "").strip()
+            or os.getenv("SSL_CERT_FILE", "").strip()
+            or os.getenv("REQUESTS_CA_BUNDLE", "").strip()
+        )
         CandidateExtractor._dify_url = url
         CandidateExtractor._dify_key = key
         CandidateExtractor._dify_user = (
@@ -3181,6 +3238,7 @@ class CandidateExtractor:
         CandidateExtractor._dify_timeout = timeout
         CandidateExtractor._bridge_auth_header = auth_header
         CandidateExtractor._bridge_auth_token = auth_token
+        CandidateExtractor._bridge_ca_bundle_path = ca_bundle_path
         CandidateExtractor._dify_enabled = bool(url)
 
     @staticmethod
@@ -3352,12 +3410,37 @@ class CandidateExtractor:
             headers=headers,
             method="POST",
         )
+        request_info = {
+            "url": safe_url_for_log(CandidateExtractor._dify_url),
+            "timeout_seconds": CandidateExtractor._dify_timeout,
+            "job_name": job.name,
+            "candidate_city": city,
+            "resume_chars": len(text or ""),
+            "has_bridge_auth": bool(CandidateExtractor._bridge_auth_header and CandidateExtractor._bridge_auth_token),
+            "has_bearer_auth": bool(CandidateExtractor._dify_key),
+        }
         try:
-            with urllib.request.urlopen(req, timeout=CandidateExtractor._dify_timeout) as resp:
+            ssl_context, system_bundle, custom_bundle = build_ssl_context_with_bundles(
+                CandidateExtractor._bridge_ca_bundle_path,
+                custom_bundle_label="评分桥自定义证书",
+            )
+            request_info["ssl_system_bundle"] = str(system_bundle) if system_bundle else ""
+            request_info["ssl_custom_bundle"] = str(custom_bundle) if custom_bundle else ""
+            write_app_scan_log("score_bridge_request_start", request_info)
+            with urllib.request.urlopen(req, timeout=CandidateExtractor._dify_timeout, context=ssl_context) as resp:
                 body = resp.read().decode("utf-8", errors="ignore")
             answer, usage = CandidateExtractor._extract_answer_from_sse(body)
             parsed = CandidateExtractor._extract_json_from_text(answer)
             if not isinstance(parsed, dict):
+                write_app_scan_log(
+                    "score_bridge_parse_failed",
+                    {
+                        **request_info,
+                        "body_chars": len(body),
+                        "answer_chars": len(answer),
+                        "answer_preview": answer[:300],
+                    },
+                )
                 return None
             score = int(parsed.get("score") or 0)
             score = max(0, min(100, score))
@@ -3405,7 +3488,15 @@ class CandidateExtractor:
                 usage=usage,
                 limit_reason=limit_reason,
             )
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, ValueError):
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, socket.timeout, json.JSONDecodeError, ValueError, IntegrationError) as exc:
+            write_app_scan_log(
+                "score_bridge_request_error",
+                {
+                    **request_info,
+                    "error_type": exc.__class__.__name__,
+                    "error": str(exc)[:500],
+                },
+            )
             return None
 
     @staticmethod
