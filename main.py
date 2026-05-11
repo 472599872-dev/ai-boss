@@ -1302,7 +1302,7 @@ def safe_filename_from_url(url: str, fallback: str) -> str:
     return name or fallback
 
 
-def download_update_package(info: UpdateInfo, target_dir: Path, timeout: int = 30) -> Path:
+def download_update_package(info: UpdateInfo, target_dir: Path) -> Path:
     target_dir.mkdir(parents=True, exist_ok=True)
     default_name = f"{APP_ID}-{info.version}.{info.package_kind or 'pkg'}"
     filename = safe_filename_from_url(info.package_url, default_name)
@@ -1320,7 +1320,7 @@ def download_update_package(info: UpdateInfo, target_dir: Path, timeout: int = 3
         )
         hasher = hashlib.sha256()
         total = 0
-        with urllib.request.urlopen(req, timeout=timeout) as resp, temp_path.open("wb") as handle:
+        with urllib.request.urlopen(req) as resp, temp_path.open("wb") as handle:
             for chunk in iter(lambda: resp.read(1024 * 1024), b""):
                 if not chunk:
                     break
@@ -8782,10 +8782,6 @@ class BossWorkbench(QMainWindow):
         if self.update_download_in_flight:
             QMessageBox.information(self, "下载更新", "更新安装包正在下载，请稍等。")
             return
-        if info.platform == "windows":
-            timeout = max(30, safe_int(app_config_string("windows_update_timeout_seconds", "15"), 15) * 4)
-        else:
-            timeout = max(30, safe_int(app_config_string("macos_update_timeout_seconds", "15"), 15) * 4)
         self.update_download_in_flight = True
         self.refresh_update_status(f"正在下载 {info.version}")
         platform_name = "Windows" if info.platform == "windows" else "macOS"
@@ -8795,7 +8791,7 @@ class BossWorkbench(QMainWindow):
             path_text = ""
             error: str | None = None
             try:
-                path = download_update_package(info, UPDATE_DIR / info.version, timeout=timeout)
+                path = download_update_package(info, UPDATE_DIR / info.version)
                 path_text = str(path)
             except Exception as exc:
                 error = str(exc)
