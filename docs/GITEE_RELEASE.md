@@ -109,44 +109,29 @@ release-assets/
       latest-macos.json
 ```
 
-建议操作：
+建议直接用仓库脚本：
 
-1. 克隆或进入 Gitee 仓库本地目录
+```bash
+./scripts/sync_gitee_release_assets.sh \
+  --version 1.0.19 \
+  --source-dir /path/to/github-artifacts/release
+```
+
+这个脚本会自动：
+
+1. 准备或更新本地 Gitee 发布仓
 2. 切到 `release-assets` 分支
-3. 把 GitHub 下载下来的文件先放进本地 `release/` 目录
-4. 运行仓库里的发布整理脚本
-5. 提交并推送
+3. 复制 GitHub 下载下来的产物
+4. 生成 `latest.json` / `latest-macos.json` 和 `releases/1.0.19/`
+5. 提交并推送到 Gitee
 
-示例：
-
-```bash
-git clone git@gitee.com:link-wei/ai-boss.git gitee-release
-cd gitee-release
-git switch release-assets || git switch --orphan release-assets
-```
-
-把 GitHub 下载的文件放进当前仓库的 `release/` 目录后执行：
+如果你只想先检查，不推送：
 
 ```bash
-python3 scripts/publish_release_artifacts.py \
-  --platform windows \
-  --public-root "$PWD" \
-  --release-dir "$PWD/release" \
-  --version 1.0.19
-
-python3 scripts/publish_release_artifacts.py \
-  --platform macos \
-  --public-root "$PWD" \
-  --release-dir "$PWD/release" \
-  --version 1.0.19
-```
-
-然后推送：
-
-```bash
-git add .
-git commit -m "release: sync v1.0.19"
-git push gitee release-assets
+./scripts/sync_gitee_release_assets.sh \
+  --version 1.0.19 \
+  --source-dir /path/to/github-artifacts/release \
+  --no-push
 ```
 
 ## 客户端配置
