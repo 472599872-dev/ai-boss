@@ -65,12 +65,19 @@ jobs:
           fi
 
       - name: Build macOS bundle and manifest
+        env:
+          RELEASE_BASE_URL: ${{ vars.RELEASE_BASE_URL }}
+          RELEASE_BASE_URL_SECRET: ${{ secrets.RELEASE_BASE_URL }}
         run: |
           chmod +x ./scripts/build_macos_bundle.sh
-          if [ "${{ github.event_name }}" = "push" ]; then
-            base_url="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+          base_url="${RELEASE_BASE_URL:-}"
+          if [ -z "$base_url" ]; then
+            base_url="${RELEASE_BASE_URL_SECRET:-}"
+          fi
+          if [ -n "$base_url" ]; then
             ./scripts/build_macos_bundle.sh --base-url "$base_url"
           else
+            echo "RELEASE_BASE_URL is empty. Build will skip manifest generation to avoid binding clients to the source repository."
             ./scripts/build_macos_bundle.sh --skip-manifest
           fi
 
@@ -85,7 +92,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Publish GitHub Release assets
-        if: github.event_name == 'push' || inputs.publish_release == true
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -94,4 +101,4 @@ jobs:
             release/*.zip
             release/*.dmg
             release/latest-macos.json
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
