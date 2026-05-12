@@ -99,11 +99,18 @@ python scripts/generate_windows_update_manifest.py \
 
 仓库已包含工作流：
 
+- [macos-release.yml](/Users/weiyifeng/ai-boss/source_share_clean_20260506/.github/workflows/macos-release.yml)
 - [windows-release.yml](/Users/weiyifeng/ai-boss/source_share_clean_20260506/.github/workflows/windows-release.yml)
 
 发布前请在仓库 `Settings -> Secrets and variables -> Actions` 配置：
 
 - `APP_CONFIG_JSON`：完整的 `app_config.json` 内容（包含飞书 App ID / App Secret 等）
+- `MACOS_CERTIFICATE_P12_BASE64`：Developer ID Application 证书（`.p12`）的 Base64 文本
+- `MACOS_CERTIFICATE_PASSWORD`：上述 `.p12` 密码
+- `MACOS_CODESIGN_IDENTITY`：签名身份（例如 `Developer ID Application: xxx (TEAMID)`）
+- `MACOS_NOTARY_APPLE_ID`：用于 notarization 的 Apple ID
+- `MACOS_NOTARY_PASSWORD`：Apple ID 的 app-specific password
+- `MACOS_NOTARY_TEAM_ID`：Apple Developer Team ID
 
 触发规则：
 
@@ -122,6 +129,13 @@ git push origin v1.0.1
 2. 生成安装器 `release/AIBossWorkbench-Windows-Installer-v版本号.exe`
 3. 生成 `release/latest.json`
 4. 发布到 GitHub Releases（同一个 tag 的 release 资产）
+
+macOS 工作流会自动：
+
+1. 生成并发布 Apple Silicon 版本 `AIBossWorkbench-macOS-v版本号.dmg`
+2. 生成并发布 Intel 版本 `AIBossWorkbench-macOS-v版本号-x64.dmg`
+3. 对 app 和 dmg 进行 `Developer ID` 签名、notarize、staple 和 Gatekeeper 校验
+4. 如缺少签名/公证 secrets，工作流会直接失败，避免发布“本机可开、他人不可开”的包
 
 客户端建议固定使用这个更新清单地址（始终指向最新 release）：
 
