@@ -132,7 +132,7 @@ jobs:
             python_arch: arm64
             artifact_suffix: ""
             skip_manifest: "0"
-          - runner: macos-13
+          - runner: macos-15-intel
             python_arch: x64
             artifact_suffix: "-x64"
             skip_manifest: "1"
