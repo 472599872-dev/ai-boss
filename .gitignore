@@ -10,6 +10,7 @@ __pycache__/
 
 # Runtime data (local only)
 app_config.json
+release_automation.env
 boss_workbench.sqlite3
 logs/
 web_profile/

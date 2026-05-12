@@ -106,36 +106,46 @@ python scripts/generate_windows_update_manifest.py \
 - 阿里云 OSS / COS / S3 + 自定义域名/CDN
 - 独立的公开“分发仓” Release（只放安装包，不放源码）
 
-## GitHub 自动打包（可选）
+## Gitee 自动发版
 
-仓库已包含工作流：
+仓库已切换为以 Gitee 为源码源头的发布方式。
 
-- [windows-release.yml](/Users/weiyifeng/ai-boss/source_share_clean_20260506/.github/workflows/windows-release.yml)
+推荐链路：
 
-发布前请在仓库 `Settings -> Secrets and variables -> Actions` 配置：
+1. Gitee 仓库接收代码和标签
+2. Gitee `Tag Push` WebHook 分别触发 Windows / macOS 构建机
+3. 构建机调用仓库内脚本打包，并把安装包与 `latest.json` 发布到你自己的更新目录
+4. 客户端只访问你自己的更新域名
 
-- `APP_CONFIG_JSON`：完整的 `app_config.json` 内容（包含飞书 App ID / App Secret 和你的更新地址）
-- `RELEASE_BASE_URL`：你的公开更新根地址，例如 `https://update.example.com/releases/1.0.1`
+相关文件：
 
-触发规则：
+- [gitee_release_receiver.py](/Users/weiyifeng/ai-boss/source_share_clean_20260506/scripts/gitee_release_receiver.py)
+- [publish_release_artifacts.py](/Users/weiyifeng/ai-boss/source_share_clean_20260506/scripts/publish_release_artifacts.py)
+- [release_automation.example.env](/Users/weiyifeng/ai-boss/source_share_clean_20260506/release_automation.example.env)
+- [GITEE_RELEASE.md](/Users/weiyifeng/ai-boss/source_share_clean_20260506/docs/GITEE_RELEASE.md)
 
-1. 修改 `app_version.txt` 为新版本（例如 `1.0.1`）
-2. 提交并推送代码
-3. 打标签并推送标签（必须与版本号一致）
+发版前你需要准备：
+
+- 一台 Windows 构建机
+- 一台 macOS 构建机
+- 一个对外可访问的静态更新目录或其挂载点
+- 两个 Gitee 仓库 WebHook（Windows / macOS 各一个）
+
+每次发版只需：
+
+1. 修改 `app_version.txt`
+2. 提交并推送到 Gitee
+3. 推送同版本标签
 
 ```bash
+git push origin main
 git tag v1.0.1
 git push origin v1.0.1
 ```
 
-工作流会自动：
+完整步骤见：
 
-1. 在 Windows runner 打包
-2. 生成安装器 `release/AIBossWorkbench-Windows-Installer-v版本号.exe`
-3. 当 `RELEASE_BASE_URL` 已配置时生成 `release/latest.json`
-4. 上传 CI 产物，供你再分发到自有更新地址
-
-如果你明确要把安装包发布到独立分发仓，再单独触发发布步骤；不要把客户端固定绑定到公开源码仓的 Release 地址。
+- [GITEE_RELEASE.md](/Users/weiyifeng/ai-boss/source_share_clean_20260506/docs/GITEE_RELEASE.md)
 
 ## 飞书与 Token 用量配置
 
