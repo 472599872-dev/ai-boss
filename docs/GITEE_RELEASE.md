@@ -12,11 +12,10 @@
 当前按你的仓库直接配置：
 
 1. Gitee 主仓库：`https://gitee.com/link-wei/ai-boss.git`
-2. GitHub 构建仓库：`https://github.com/MilkTeaCoder/mova-esb.git`
-3. GitHub 构建分支：`ai-boss-main`
+2. GitHub 构建仓库：`https://github.com/MilkTeaCoder/ai-boss-workbench.git`
 4. Gitee 对外分发分支：`release-assets`
 
-也就是不再单独新建分发仓，而是在 `link-wei/ai-boss` 里用 `release-assets` 分支专门承载安装包和更新清单；GitHub 上则把当前项目放在 `ai-boss-main` 分支，避免覆盖该仓库原有的 `main`。
+也就是不再单独新建分发仓，而是在 `link-wei/ai-boss` 里用 `release-assets` 分支专门承载安装包和更新清单；GitHub 上则直接使用 `main` 分支跑构建。
 
 `release-assets` 分支目录结构如下：
 
@@ -79,7 +78,7 @@ macOS 还必须配置：
 
 ## 发版方式
 
-日常开发仍然优先推到 Gitee，但用于构建的代码和 tag 必须同时到达 GitHub 仓库 `MilkTeaCoder/mova-esb` 的 `ai-boss-main` 分支上下文。
+日常开发仍然优先推到 Gitee，但用于构建的代码和 tag 必须同时到达 GitHub 仓库 `MilkTeaCoder/ai-boss-workbench` 的 `main` 分支。
 
 每次发版：
 
@@ -97,7 +96,7 @@ git push gitee v1.0.18
 git push origin v1.0.18
 ```
 
-当前 `v1.0.18` 已经推到了 GitHub，但工作流是在后续提交中加入的，所以这一次需要在 GitHub Actions 页面手工执行 `workflow_dispatch`，并填入 `v1.0.18`。
+当前 `v1.0.18` 需要在包含新工作流的提交上重新推送到 GitHub，或者在 GitHub Actions 页面手工执行 `workflow_dispatch` 并填入 `v1.0.18`。
 
 ## 客户端配置
 
