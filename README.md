@@ -16,18 +16,18 @@ run_app.command
 
 ## 配置文件
 
-项目根目录下已经提供了配置文件：
+仓库里只保留配置模板：
 
-- [app_config.json](/Users/weiyifeng/ai-boss/source_share_clean_20260506/app_config.json)
+- [app_config.example.json](/Users/weiyifeng/ai-boss/source_share_clean_20260506/app_config.example.json)
 
-后续修改飞书凭证、飞书云文档参数、Dify 网关地址、Token 限额等，只需要改这个文件，不需要改代码。
+首次使用时请复制一份为本地 `app_config.json`，再填写飞书凭证、飞书云文档参数、网关地址和在线更新地址。真实 `app_config.json` 只用于本地运行或打包注入，不要提交到公开仓库。
 
 说明：
 
 - 开发态直接读取项目根目录下的 `app_config.json`
 - Windows 安装版会把实际运行配置写到 `%APPDATA%\AIBossWorkbench\app_config.json`
-- Windows 在线更新也通过这个配置文件控制，关键字段是 `windows_update_manifest_url`
-- 你提供的飞书人员额度表 `app_token` 和 `table_id` 已经预填进配置文件
+- 在线更新也通过这个配置文件控制，关键字段是 `windows_update_manifest_url` 和 `macos_update_manifest_url`
+- `app_config.json` 已被 `.gitignore` 忽略，公开仓库只应保留示例文件
 
 ## 当前能力
 
@@ -41,7 +41,7 @@ run_app.command
 - 本地 SQLite 持久化：岗位、候选人、扫描日志、动作日志。
 - 记录 AI 调用 token 使用量，支持本地逐次记账、飞书人员额度表同步、按人充值余额拦截。
 - 如果自建 Dify / 网关返回 usage 信息，则记录精确 token；否则退化为按文本长度估算。
-- Windows 版本支持远程发布与在线更新：客户端会读取 `latest.json`，下载新版安装器并在退出后启动安装。
+- Windows / macOS 支持远程发布与在线更新：客户端会读取你自己的 `latest.json` 清单，下载新版安装包并在退出后启动安装。
 
 ## 说明
 
@@ -56,9 +56,9 @@ run_app.command
 - 日志会记录候选人列表识别结果、实际点击的人选文本、在线简历按钮识别方式、详情文本长度和预览。
 - 飞书登录态保存在本地 SQLite 的 `app_settings` 中；运行配置保存在 `app_config.json`；AI 用量明细保存在 `ai_usage_logs`。
 
-## Windows 在线更新
+## 在线更新
 
-应用会读取 `windows_update_manifest_url` 指向的远程 JSON 清单。清单里需要至少提供：
+应用会读取 `windows_update_manifest_url` 或 `macos_update_manifest_url` 指向的远程 JSON 清单。清单里需要至少提供：
 
 - `version`
 - `windows.installer_url`
@@ -73,6 +73,17 @@ run_app.command
 4. 下载新版安装器到用户目录
 5. 校验 `sha256`
 6. 退出当前程序并启动安装器
+
+## 发布原则
+
+不要让客户端直连公开源码仓库。
+
+推荐结构：
+
+1. 源码仓库设为 private
+2. CI 只负责打包产物
+3. 安装包和 `latest.json` 上传到你自己的域名 / OSS / CDN，或单独的公开分发仓
+4. 客户端只配置分发地址，不配置源码仓地址
 
 ## Windows 发布流程
 
@@ -92,54 +103,49 @@ python scripts/generate_windows_update_manifest.py \
 
 推荐的发布位置：
 
-- GitHub Releases
-- 阿里云 OSS + 自定义域名/CDN
+- 阿里云 OSS / COS / S3 + 自定义域名/CDN
+- 独立的公开“分发仓” Release（只放安装包，不放源码）
 
-## GitHub 自动发布（已配置）
+## Gitee 自动发版
 
-仓库已包含工作流：
+仓库已切换为以 Gitee 为源码源头的发布方式。
 
-- [macos-release.yml](/Users/weiyifeng/ai-boss/source_share_clean_20260506/.github/workflows/macos-release.yml)
-- [windows-release.yml](/Users/weiyifeng/ai-boss/source_share_clean_20260506/.github/workflows/windows-release.yml)
+推荐链路：
 
-发布前请在仓库 `Settings -> Secrets and variables -> Actions` 配置：
+1. Gitee 仓库接收代码和标签
+2. Gitee `Tag Push` WebHook 分别触发 Windows / macOS 构建机
+3. 构建机调用仓库内脚本打包，并把安装包与 `latest.json` 发布到你自己的更新目录
+4. 客户端只访问你自己的更新域名
 
-- `APP_CONFIG_JSON`：完整的 `app_config.json` 内容（包含飞书 App ID / App Secret 等）
-- `MACOS_CERTIFICATE_P12_BASE64`：Developer ID Application 证书（`.p12`）的 Base64 文本
-- `MACOS_CERTIFICATE_PASSWORD`：上述 `.p12` 密码
-- `MACOS_CODESIGN_IDENTITY`：签名身份（例如 `Developer ID Application: xxx (TEAMID)`）
-- `MACOS_NOTARY_APPLE_ID`：用于 notarization 的 Apple ID
-- `MACOS_NOTARY_PASSWORD`：Apple ID 的 app-specific password
-- `MACOS_NOTARY_TEAM_ID`：Apple Developer Team ID
+相关文件：
 
-触发规则：
+- [gitee_release_receiver.py](/Users/weiyifeng/ai-boss/source_share_clean_20260506/scripts/gitee_release_receiver.py)
+- [publish_release_artifacts.py](/Users/weiyifeng/ai-boss/source_share_clean_20260506/scripts/publish_release_artifacts.py)
+- [release_automation.example.env](/Users/weiyifeng/ai-boss/source_share_clean_20260506/release_automation.example.env)
+- [GITEE_RELEASE.md](/Users/weiyifeng/ai-boss/source_share_clean_20260506/docs/GITEE_RELEASE.md)
 
-1. 修改 `app_version.txt` 为新版本（例如 `1.0.1`）
-2. 提交并推送代码
-3. 打标签并推送标签（必须与版本号一致）
+发版前你需要准备：
+
+- 一台 Windows 构建机
+- 一台 macOS 构建机
+- 一个对外可访问的静态更新目录或其挂载点
+- 两个 Gitee 仓库 WebHook（Windows / macOS 各一个）
+
+每次发版只需：
+
+1. 修改 `app_version.txt`
+2. 提交并推送到 Gitee
+3. 推送同版本标签
 
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+git push gitee main
+git tag v<版本号>
+git push gitee v<版本号>
 ```
 
-工作流会自动：
+完整步骤见：
 
-1. 在 Windows runner 打包
-2. 生成安装器 `release/AIBossWorkbench-Windows-Installer-v版本号.exe`
-3. 生成 `release/latest.json`
-4. 发布到 GitHub Releases（同一个 tag 的 release 资产）
-
-macOS 工作流会自动：
-
-1. 生成并发布 Apple Silicon 版本 `AIBossWorkbench-macOS-v版本号.dmg`
-2. 生成并发布 Intel 版本 `AIBossWorkbench-macOS-v版本号-x64.dmg`
-3. 对 app 和 dmg 进行 `Developer ID` 签名、notarize、staple 和 Gatekeeper 校验
-4. 如缺少签名/公证 secrets，工作流会直接失败，避免发布“本机可开、他人不可开”的包
-
-客户端建议固定使用这个更新清单地址（始终指向最新 release）：
-
-- `https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest.json`
+- [GITEE_RELEASE.md](/Users/weiyifeng/ai-boss/source_share_clean_20260506/docs/GITEE_RELEASE.md)
 
 ## 飞书与 Token 用量配置
 
