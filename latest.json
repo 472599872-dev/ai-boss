@@ -1,0 +1,32 @@
+{
+  "version": "1.0.20",
+  "notes": "",
+  "published_at": "2026-05-12T08:58:13+00:00",
+  "windows": {
+    "version": "1.0.20",
+    "installer_url": "https://link-wei.gitee.io/ai-boss/releases/1.0.20/AIBossWorkbench-Windows-Installer-v1.0.20.exe",
+    "sha256": "ac1a05a84cbc60820c95f19a6f8ad8266d342b95d704d48d9e49a4100b158cad",
+    "size": 150146479,
+    "mandatory": false,
+    "installer_args": [
+      "/SP-"
+    ]
+  },
+  "channels": {
+    "stable": {
+      "version": "1.0.20",
+      "notes": "",
+      "published_at": "2026-05-12T08:58:13+00:00",
+      "windows": {
+        "version": "1.0.20",
+        "installer_url": "https://link-wei.gitee.io/ai-boss/releases/1.0.20/AIBossWorkbench-Windows-Installer-v1.0.20.exe",
+        "sha256": "ac1a05a84cbc60820c95f19a6f8ad8266d342b95d704d48d9e49a4100b158cad",
+        "size": 150146479,
+        "mandatory": false,
+        "installer_args": [
+          "/SP-"
+        ]
+      }
+    }
+  }
+}

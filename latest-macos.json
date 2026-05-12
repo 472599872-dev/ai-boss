@@ -1,0 +1,40 @@
+{
+  "version": "1.0.20",
+  "notes": "",
+  "published_at": "2026-05-12T08:52:36+00:00",
+  "macos": {
+    "version": "1.0.20",
+    "package_url": "https://link-wei.gitee.io/ai-boss/releases/1.0.20/AIBossWorkbench-macOS-v1.0.20.dmg",
+    "package_kind": "dmg",
+    "sha256": "5c892179f6acaf03ca4e607a80f6da33c207c9ff4bff0ab4570ce624a1e6b3bf",
+    "size": 217215707,
+    "mandatory": false,
+    "zip_url": "https://link-wei.gitee.io/ai-boss/releases/1.0.20/AIBossWorkbench-macOS-v1.0.20.zip",
+    "zip_sha256": "b1f4cb2de19324d680673dba360e0925d6dd6941dd89b3cc69a94325dd481fd9",
+    "zip_size": 186596637,
+    "dmg_url": "https://link-wei.gitee.io/ai-boss/releases/1.0.20/AIBossWorkbench-macOS-v1.0.20.dmg",
+    "dmg_sha256": "5c892179f6acaf03ca4e607a80f6da33c207c9ff4bff0ab4570ce624a1e6b3bf",
+    "dmg_size": 217215707
+  },
+  "channels": {
+    "stable": {
+      "version": "1.0.20",
+      "notes": "",
+      "published_at": "2026-05-12T08:52:36+00:00",
+      "macos": {
+        "version": "1.0.20",
+        "package_url": "https://link-wei.gitee.io/ai-boss/releases/1.0.20/AIBossWorkbench-macOS-v1.0.20.dmg",
+        "package_kind": "dmg",
+        "sha256": "5c892179f6acaf03ca4e607a80f6da33c207c9ff4bff0ab4570ce624a1e6b3bf",
+        "size": 217215707,
+        "mandatory": false,
+        "zip_url": "https://link-wei.gitee.io/ai-boss/releases/1.0.20/AIBossWorkbench-macOS-v1.0.20.zip",
+        "zip_sha256": "b1f4cb2de19324d680673dba360e0925d6dd6941dd89b3cc69a94325dd481fd9",
+        "zip_size": 186596637,
+        "dmg_url": "https://link-wei.gitee.io/ai-boss/releases/1.0.20/AIBossWorkbench-macOS-v1.0.20.dmg",
+        "dmg_sha256": "5c892179f6acaf03ca4e607a80f6da33c207c9ff4bff0ab4570ce624a1e6b3bf",
+        "dmg_size": 217215707
+      }
+    }
+  }
+}
