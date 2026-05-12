@@ -194,17 +194,20 @@ if [[ "$NOTARY_ANY_SET" == "1" ]]; then
   spctl -a -vv -t open "$DMG_PATH"
 fi
 
+MANIFEST_GENERATED="0"
 if [[ "$SKIP_MANIFEST" != "1" ]]; then
   FINAL_BASE_URL="$BASE_URL"
   if [[ -z "$FINAL_BASE_URL" ]]; then
-    FINAL_BASE_URL="https://link-wei.gitee.io/ai-boss/releases/${VERSION}"
+    echo "BaseUrl 未配置，跳过 latest-macos.json 生成。请改用你自己的静态更新地址。"
+  else
+    step "生成 latest-macos.json"
+    "$PYTHON" scripts/generate_macos_update_manifest.py \
+      --base-url "$FINAL_BASE_URL" \
+      --zip "$ZIP_PATH" \
+      --dmg "$DMG_PATH" \
+      --out "release/latest-macos.json"
+    MANIFEST_GENERATED="1"
   fi
-  step "生成 latest-macos.json"
-  "$PYTHON" scripts/generate_macos_update_manifest.py \
-    --base-url "$FINAL_BASE_URL" \
-    --zip "$ZIP_PATH" \
-    --dmg "$DMG_PATH" \
-    --out "release/latest-macos.json"
 fi
 
 step "打包完成"
@@ -215,6 +218,10 @@ fi
 echo "App Bundle       : $APP_PATH"
 echo "ZIP              : $ZIP_PATH"
 echo "DMG              : $DMG_PATH"
-if [[ "$SKIP_MANIFEST" != "1" ]]; then
+if [[ "$MANIFEST_GENERATED" == "1" ]]; then
   echo "更新清单         : $ROOT_DIR/release/latest-macos.json"
+elif [[ "$SKIP_MANIFEST" == "1" ]]; then
+  echo "更新清单         : 已跳过 (--skip-manifest)"
+else
+  echo "更新清单         : 已跳过（未配置 BaseUrl）"
 fi

@@ -93,7 +93,7 @@ run_app.command
 
 ```bash
 python scripts/generate_windows_update_manifest.py \
-  --base-url https://link-wei.gitee.io/ai-boss/releases/1.0.0 \
+  --base-url https://update.example.com/ai-boss/releases/1.0.0 \
   --installer release/AIBossWorkbench-Windows-Installer-v1.0.0.exe \
   --out release/latest.json
 ```
@@ -113,8 +113,8 @@ python scripts/generate_windows_update_manifest.py \
 1. Gitee 作为主代码仓库
 2. GitHub 作为构建镜像仓库，负责运行 GitHub Actions
 3. GitHub Actions 在托管的 Windows / macOS runner 上打包
-4. 你手动把安装包和 `latest.json` / `latest-macos.json` 同步到 Gitee 的 `release-assets` 分支
-5. 客户端只访问 Gitee 分发地址，不直接访问 GitHub
+4. 安装包发布到你自己的静态下载地址，例如 OSS / COS / CDN
+5. 客户端只访问你自己的更新地址，不直接访问公开源码仓库
 
 相关文件：
 
@@ -125,9 +125,8 @@ python scripts/generate_windows_update_manifest.py \
 你需要准备：
 
 - 一个 GitHub 仓库镜像：`MilkTeaCoder/ai-boss-workbench`
-- Gitee 仓库 `link-wei/ai-boss` 的公开分支 `release-assets`，只存安装包与更新清单
 - 可选 GitHub secret：`APP_CONFIG_JSON`
-- 可选覆盖 secret：`GITEE_RELEASE_BASE_URL`
+- 可选覆盖 secret：`GITEE_RELEASE_BASE_URL`，例如 `https://update.example.com/ai-boss`
 - 不要求 macOS 签名与公证 secrets，默认生成未签名包
 
 发版方式：
@@ -136,7 +135,8 @@ python scripts/generate_windows_update_manifest.py \
 2. 把同一提交同步到 GitHub 镜像仓
 3. 推送同版本标签到 GitHub
 4. GitHub Actions 自动打包并生成可下载 artifact
-5. 手动把产物同步到 Gitee 分发分支
+5. 如果配置了 `GITEE_RELEASE_BASE_URL`，工作流会同时生成更新清单；否则只打包，不生成清单
+6. 把安装包和清单上传到你自己的静态下载地址
 
 常用命令：
 

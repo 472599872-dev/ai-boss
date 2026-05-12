@@ -120,6 +120,17 @@ for name in "${required_files[@]}"; do
   fi
 done
 
+size_limit_bytes=$((100 * 1024 * 1024))
+for name in "${required_files[@]}"; do
+  file_path="$SOURCE_DIR/$name"
+  file_size=$(wc -c < "$file_path")
+  if [[ "$file_size" -gt "$size_limit_bytes" ]]; then
+    echo "Artifact exceeds Gitee repo file limit (100MB): $file_path" >&2
+    echo "Please upload installers to your own static download host instead of pushing them into a Gitee branch." >&2
+    exit 1
+  fi
+done
+
 if [[ -z "$COMMIT_MESSAGE" ]]; then
   COMMIT_MESSAGE="release: sync v${VERSION}"
 fi

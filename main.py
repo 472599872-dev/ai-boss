@@ -400,18 +400,30 @@ LEGACY_GITEE_RAW_WINDOWS_UPDATE_MANIFEST_URL = (
 LEGACY_GITEE_RAW_MACOS_UPDATE_MANIFEST_URL = (
     "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest-macos.json"
 )
+LEGACY_GITEE_PAGES_UPDATE_BASE_URL = "https://link-wei.gitee.io/ai-boss"
+LEGACY_GITEE_PAGES_WINDOWS_UPDATE_MANIFEST_URL = (
+    f"{LEGACY_GITEE_PAGES_UPDATE_BASE_URL}/latest.json"
+)
+LEGACY_GITEE_PAGES_MACOS_UPDATE_MANIFEST_URL = (
+    f"{LEGACY_GITEE_PAGES_UPDATE_BASE_URL}/latest-macos.json"
+)
 BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS = {
     LEGACY_PUBLIC_WINDOWS_UPDATE_MANIFEST_URL,
     LEGACY_PUBLIC_MACOS_UPDATE_MANIFEST_URL,
     LEGACY_GITEE_RAW_WINDOWS_UPDATE_MANIFEST_URL,
     LEGACY_GITEE_RAW_MACOS_UPDATE_MANIFEST_URL,
+    LEGACY_GITEE_PAGES_WINDOWS_UPDATE_MANIFEST_URL,
+    LEGACY_GITEE_PAGES_MACOS_UPDATE_MANIFEST_URL,
 }
-DEFAULT_GITEE_PAGES_UPDATE_BASE_URL = "https://link-wei.gitee.io/ai-boss"
-DEFAULT_WINDOWS_UPDATE_MANIFEST_URL = f"{DEFAULT_GITEE_PAGES_UPDATE_BASE_URL}/latest.json"
-DEFAULT_MACOS_UPDATE_MANIFEST_URL = f"{DEFAULT_GITEE_PAGES_UPDATE_BASE_URL}/latest-macos.json"
+DEFAULT_WINDOWS_UPDATE_MANIFEST_URL = ""
+DEFAULT_MACOS_UPDATE_MANIFEST_URL = ""
 DEFAULT_UPDATE_MANIFEST_URLS = {
     "windows": DEFAULT_WINDOWS_UPDATE_MANIFEST_URL,
     "macos": DEFAULT_MACOS_UPDATE_MANIFEST_URL,
+}
+UPDATE_MANIFEST_URL_PLACEHOLDERS = {
+    "windows": "https://downloads.example.com/latest.json",
+    "macos": "https://downloads.example.com/latest-macos.json",
 }
 DEFAULT_FEISHU_SETTINGS = {
     "feishu_app_id": "",
@@ -458,14 +470,14 @@ DEFAULT_APP_CONFIG = {
     "llm_bridge_auth_token": "",
     "dify_user_id": "boss-workbench",
     "boss_workbench_autoscan": False,
-    "windows_update_enabled": True,
+    "windows_update_enabled": False,
     "windows_update_manifest_url": DEFAULT_WINDOWS_UPDATE_MANIFEST_URL,
-    "windows_update_check_on_startup": True,
+    "windows_update_check_on_startup": False,
     "windows_update_channel": "stable",
     "windows_update_timeout_seconds": 15,
-    "macos_update_enabled": True,
+    "macos_update_enabled": False,
     "macos_update_manifest_url": DEFAULT_MACOS_UPDATE_MANIFEST_URL,
-    "macos_update_check_on_startup": True,
+    "macos_update_check_on_startup": False,
     "macos_update_channel": "stable",
     "macos_update_timeout_seconds": 15,
 }
@@ -1566,12 +1578,12 @@ def _normalize_app_config(payload: dict[str, Any] | None) -> dict[str, Any]:
         manifest_url = str(config.get(manifest_key) or "").strip()
         if manifest_url in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS:
             config[manifest_key] = DEFAULT_UPDATE_MANIFEST_URLS[platform]
-            config[enabled_key] = True
-            config[startup_key] = True
+            config[enabled_key] = False
+            config[startup_key] = False
         elif not manifest_url:
             config[manifest_key] = DEFAULT_UPDATE_MANIFEST_URLS[platform]
-            config[enabled_key] = True
-            config[startup_key] = True
+            config[enabled_key] = False
+            config[startup_key] = False
         else:
             config[manifest_key] = manifest_url
     return config
@@ -8619,8 +8631,8 @@ class BossWorkbench(QMainWindow):
         self.macos_update_manifest_url_input = QLineEdit()
         self.macos_update_channel_input = QLineEdit()
         self.macos_update_timeout_input = QLineEdit()
-        self.windows_update_manifest_url_input.setPlaceholderText(DEFAULT_WINDOWS_UPDATE_MANIFEST_URL)
-        self.macos_update_manifest_url_input.setPlaceholderText(DEFAULT_MACOS_UPDATE_MANIFEST_URL)
+        self.windows_update_manifest_url_input.setPlaceholderText(UPDATE_MANIFEST_URL_PLACEHOLDERS["windows"])
+        self.macos_update_manifest_url_input.setPlaceholderText(UPDATE_MANIFEST_URL_PLACEHOLDERS["macos"])
         self.windows_update_channel_input.setPlaceholderText("stable")
         self.macos_update_channel_input.setPlaceholderText("stable")
         self.windows_update_timeout_input.setPlaceholderText("15")
@@ -8631,7 +8643,7 @@ class BossWorkbench(QMainWindow):
         update_settings_layout = QVBoxLayout(update_settings_box)
         update_settings_layout.setSpacing(12)
         update_note = QLabel(
-            "请使用你自己的静态更新地址。Gitee raw 链接会返回 403，建议使用 Gitee Pages；多个清单地址可用分号分隔。"
+            "请使用你自己的静态更新地址。当前仓库的 Gitee raw 会返回 403，Gitee Pages 也不能作为默认前提；只有在你已验证 URL 可访问时才填写。多个清单地址可用分号分隔。"
         )
         update_note.setWordWrap(True)
         update_note.setObjectName("Log")

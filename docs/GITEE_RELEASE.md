@@ -4,15 +4,22 @@
 
 1. Gitee 继续作为主代码仓库
 2. GitHub 只负责运行 GitHub Actions 打包 Windows / macOS
-3. GitHub Actions 产出安装包和更新清单
-4. 你手动把这些产物同步到 Gitee `release-assets` 分支
-5. 客户端只从 Gitee 拉取 `latest.json` / `latest-macos.json`
+3. GitHub Actions 在你提供静态下载域名时才生成更新清单
+4. 安装包和清单发布到你自己的静态下载地址
+5. 客户端只从你自己的更新地址拉取 `latest.json` / `latest-macos.json`
+
+重要限制：
+
+1. Gitee `raw` 地址会对程序化下载返回 `403`
+2. 当前仓库的 `link-wei.gitee.io` 不能作为默认可用前提
+3. Gitee 仓库单文件上限是 `100MB`，当前安装包超过这个限制，不能直接放进仓库分支
+4. 所以默认方案必须改为你自己的静态域名 / OSS / COS / CDN
 
 ## 当前仓库配置
 
 1. Gitee 主仓库：`https://gitee.com/link-wei/ai-boss.git`
 2. GitHub 构建仓库：`https://github.com/MilkTeaCoder/ai-boss-workbench.git`
-3. Gitee 对外分发分支：`release-assets`
+3. 默认不再假设 Gitee 可以直接托管更新清单或安装包
 
 ## GitHub Actions 做什么
 
@@ -38,18 +45,18 @@
 作用：
 
 1. 如果配置了，构建时会把它写成 `app_config.json`
-2. 如果没配置，工作流也会继续构建，并使用代码里的默认更新配置
-3. 默认更新配置会指向 Gitee `release-assets` 分支
+2. 如果没配置，工作流也会继续构建，但默认关闭在线更新
+3. 新版本不会再默认指向 `link-wei.gitee.io`
 
 可选覆盖：
 
 - `GITEE_RELEASE_BASE_URL`
 
-默认值已经写进工作流：
+这个值现在没有仓库内默认值，必须由你显式提供，例如：
 
-- `https://link-wei.gitee.io/ai-boss`
+- `https://update.example.com/ai-boss`
 
-这个值用于生成 `latest.json` / `latest-macos.json` 里的下载地址。Gitee 的 `raw` 地址会对程序化下载返回 403，自动更新必须改走 Gitee Pages 或你自己的静态文件域名。
+只有配置了这个值，GitHub Actions 和本地打包脚本才会生成 `latest.json` / `latest-macos.json`。
 
 ## 发版方式
 
@@ -61,8 +68,9 @@
 4. 推送到 GitHub
 5. 推送同版本 tag 到两个远端
 6. GitHub Actions 自动打包
-7. 从 GitHub Actions 下载 artifacts
-8. 手动同步到 Gitee `release-assets`
+7. 如果配置了静态下载域名，则同时生成更新清单
+8. 从 GitHub Actions 下载 artifacts
+9. 上传到你自己的静态下载地址
 
 ```bash
 git push gitee main
@@ -90,50 +98,15 @@ macOS artifact 里会有：
 
 ## 如何手动同步到 Gitee
 
-推荐仍然用 `release-assets` 分支，不要用 Gitee Release 附件。
+不再推荐把安装包同步到 Gitee 仓库分支。
 
-目录结构如下：
+原因：
 
-```text
-release-assets/
-  latest.json
-  latest-macos.json
-  releases/
-    1.0.19/
-      AIBossWorkbench-Windows-Installer-v1.0.19.exe
-      AIBossWorkbench-Windows-v1.0.19.zip
-      latest.json
-      AIBossWorkbench-macOS-v1.0.19.zip
-      AIBossWorkbench-macOS-v1.0.19.dmg
-      AIBossWorkbench-macOS-v1.0.19-x64.zip
-      AIBossWorkbench-macOS-v1.0.19-x64.dmg
-      latest-macos.json
-```
+1. 当前安装包大于 `100MB`
+2. Gitee 仓库分支推送会被大小限制拒绝
+3. 即使只放清单，安装包下载地址仍然必须指向你自己的静态域名
 
-建议直接用仓库脚本：
-
-```bash
-./scripts/sync_gitee_release_assets.sh \
-  --version 1.0.19 \
-  --source-dir /path/to/github-artifacts/release
-```
-
-这个脚本会自动：
-
-1. 准备或更新本地 Gitee 发布仓
-2. 切到 `release-assets` 分支
-3. 复制 GitHub 下载下来的产物
-4. 生成 `latest.json` / `latest-macos.json` 和 `releases/1.0.19/`
-5. 提交并推送到 Gitee
-
-如果你只想先检查，不推送：
-
-```bash
-./scripts/sync_gitee_release_assets.sh \
-  --version 1.0.19 \
-  --source-dir /path/to/github-artifacts/release \
-  --no-push
-```
+如果你只是想在 Gitee 仓库里保留版本信息，可以只提交文本说明或小型 JSON 清单，不要再把安装包推到仓库分支。
 
 ## 客户端配置
 
@@ -141,11 +114,24 @@ release-assets/
 
 ```json
 {
+  "windows_update_enabled": false,
+  "windows_update_manifest_url": "",
+  "windows_update_check_on_startup": false,
+  "macos_update_enabled": false,
+  "macos_update_manifest_url": "",
+  "macos_update_check_on_startup": false
+}
+```
+
+等你准备好自己的静态更新地址后，再改成：
+
+```json
+{
   "windows_update_enabled": true,
-  "windows_update_manifest_url": "https://link-wei.gitee.io/ai-boss/latest.json",
+  "windows_update_manifest_url": "https://update.example.com/ai-boss/latest.json",
   "windows_update_check_on_startup": true,
   "macos_update_enabled": true,
-  "macos_update_manifest_url": "https://link-wei.gitee.io/ai-boss/latest-macos.json",
+  "macos_update_manifest_url": "https://update.example.com/ai-boss/latest-macos.json",
   "macos_update_check_on_startup": true
 }
 ```

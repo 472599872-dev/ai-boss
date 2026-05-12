@@ -123,16 +123,19 @@ if (-not (Test-Path $installerPath)) {
     throw "安装器未生成: $installerPath"
 }
 
+$manifestGenerated = $false
 if (-not $SkipManifest) {
     $finalBaseUrl = $BaseUrl.Trim()
     if (-not $finalBaseUrl) {
-        $finalBaseUrl = "https://link-wei.gitee.io/ai-boss/releases/$version"
+        Write-Warning "BaseUrl 未配置，跳过 latest.json 生成。请改用你自己的静态更新地址。"
+    } else {
+        Write-Step "生成 latest.json"
+        & $python "scripts\generate_windows_update_manifest.py" `
+            --base-url $finalBaseUrl `
+            --installer $installerPath `
+            --out "release\latest.json"
+        $manifestGenerated = $true
     }
-    Write-Step "生成 latest.json"
-    & $python "scripts\generate_windows_update_manifest.py" `
-        --base-url $finalBaseUrl `
-        --installer $installerPath `
-        --out "release\latest.json"
 }
 
 Write-Step "打包完成"
@@ -140,6 +143,10 @@ Write-Host "版本号           : $version"
 Write-Host "运行目录         : $distDir"
 Write-Host "ZIP              : $zipPath"
 Write-Host "安装器           : $installerPath"
-if (-not $SkipManifest) {
+if ($manifestGenerated) {
     Write-Host "更新清单         : $(Join-Path $root 'release\latest.json')"
+} elseif ($SkipManifest) {
+    Write-Host "更新清单         : 已跳过 (--SkipManifest)"
+} else {
+    Write-Host "更新清单         : 已跳过（未配置 BaseUrl）"
 }

@@ -63,7 +63,7 @@ jobs:
 
           release_base_url="${GITEE_RELEASE_BASE_URL%/}"
           if [ -z "$release_base_url" ]; then
-            release_base_url="https://link-wei.gitee.io/ai-boss"
+            echo "GITEE_RELEASE_BASE_URL is not set. Workflow will build packages only and skip update manifest generation."
           fi
 
           echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
@@ -105,11 +105,15 @@ jobs:
             Write-Host "APP_CONFIG_JSON not set. Build will continue without injected runtime config."
           }
 
-      - name: Build Windows installer and manifest
+      - name: Build Windows installer
         shell: pwsh
         run: |
-          $baseUrl = "$env:RELEASE_BASE_URL/releases/$env:RELEASE_VERSION"
-          pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -BaseUrl $baseUrl
+          if ($env:RELEASE_BASE_URL) {
+            $baseUrl = "$env:RELEASE_BASE_URL/releases/$env:RELEASE_VERSION"
+            pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -BaseUrl $baseUrl
+          } else {
+            pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -SkipManifest
+          }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -165,18 +169,18 @@ jobs:
             echo "APP_CONFIG_JSON not set. Build will continue without injected runtime config."
           fi
 
-      - name: Build unsigned macOS bundle and manifest
+      - name: Build unsigned macOS bundle
         shell: bash
         run: |
           chmod +x ./scripts/build_macos_bundle.sh
-          args=(
-            --base-url "$RELEASE_BASE_URL/releases/$RELEASE_VERSION"
-          )
+          args=()
+          if [ -n "$RELEASE_BASE_URL" ] && [ "${{ matrix.skip_manifest }}" != "1" ]; then
+            args+=(--base-url "$RELEASE_BASE_URL/releases/$RELEASE_VERSION")
+          else
+            args+=(--skip-manifest)
+          fi
           if [ -n "${{ matrix.artifact_suffix }}" ]; then
             args+=(--artifact-suffix "${{ matrix.artifact_suffix }}")
-          fi
-          if [ "${{ matrix.skip_manifest }}" = "1" ]; then
-            args+=(--skip-manifest)
           fi
           ./scripts/build_macos_bundle.sh "${args[@]}"
 
