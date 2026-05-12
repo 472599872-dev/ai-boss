@@ -106,14 +106,14 @@ python scripts/generate_windows_update_manifest.py \
 - 阿里云 OSS / COS / S3 + 自定义域名/CDN
 - 独立的公开“分发仓” Release（只放安装包，不放源码）
 
-## GitHub 构建，Gitee 分发
+## GitHub 构建，手动同步到 Gitee
 
 当前推荐链路：
 
 1. Gitee 作为主代码仓库
 2. GitHub 作为构建镜像仓库，负责运行 GitHub Actions
 3. GitHub Actions 在托管的 Windows / macOS runner 上打包
-4. GitHub Actions 把安装包和 `latest.json` / `latest-macos.json` 推送到公开的 Gitee 分发仓
+4. 你手动把安装包和 `latest.json` / `latest-macos.json` 同步到 Gitee 的 `release-assets` 分支
 5. 客户端只访问 Gitee 分发地址，不直接访问 GitHub
 
 相关文件：
@@ -126,17 +126,17 @@ python scripts/generate_windows_update_manifest.py \
 
 - 一个 GitHub 仓库镜像：`MilkTeaCoder/ai-boss-workbench`
 - Gitee 仓库 `link-wei/ai-boss` 的公开分支 `release-assets`，只存安装包与更新清单
-- GitHub 仓库 secrets：`APP_CONFIG_JSON`
-- macOS 签名与公证 secrets：`MACOS_CERTIFICATE_P12_BASE64`、`MACOS_CERTIFICATE_PASSWORD`、`MACOS_CODESIGN_IDENTITY`、`MACOS_NOTARY_APPLE_ID`、`MACOS_NOTARY_PASSWORD`、`MACOS_NOTARY_TEAM_ID`
-- Gitee 分发写入 secret：`GITEE_RELEASE_SSH_KEY`
-- 可选覆盖 secrets：`GITEE_RELEASE_REPO`、`GITEE_RELEASE_BRANCH`、`GITEE_RELEASE_BASE_URL`
+- 可选 GitHub secret：`APP_CONFIG_JSON`
+- 可选覆盖 secret：`GITEE_RELEASE_BASE_URL`
+- 不要求 macOS 签名与公证 secrets，默认生成未签名包
 
 发版方式：
 
 1. 在 Gitee 修改代码和 `app_version.txt`
 2. 把同一提交同步到 GitHub 镜像仓
 3. 推送同版本标签到 GitHub
-4. GitHub Actions 自动打包并把产物同步到 Gitee 分发仓
+4. GitHub Actions 自动打包并生成可下载 artifact
+5. 手动把产物同步到 Gitee 分发分支
 
 常用命令：
 
