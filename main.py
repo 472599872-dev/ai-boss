@@ -371,6 +371,12 @@ BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS = {
     LEGACY_PUBLIC_WINDOWS_UPDATE_MANIFEST_URL,
     LEGACY_PUBLIC_MACOS_UPDATE_MANIFEST_URL,
 }
+DEFAULT_WINDOWS_UPDATE_MANIFEST_URL = "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest.json"
+DEFAULT_MACOS_UPDATE_MANIFEST_URL = "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest-macos.json"
+DEFAULT_UPDATE_MANIFEST_URLS = {
+    "windows": DEFAULT_WINDOWS_UPDATE_MANIFEST_URL,
+    "macos": DEFAULT_MACOS_UPDATE_MANIFEST_URL,
+}
 DEFAULT_FEISHU_SETTINGS = {
     "feishu_app_id": "",
     "feishu_app_secret": "",
@@ -416,14 +422,14 @@ DEFAULT_APP_CONFIG = {
     "llm_bridge_auth_token": "",
     "dify_user_id": "boss-workbench",
     "boss_workbench_autoscan": False,
-    "windows_update_enabled": False,
-    "windows_update_manifest_url": "",
-    "windows_update_check_on_startup": False,
+    "windows_update_enabled": True,
+    "windows_update_manifest_url": DEFAULT_WINDOWS_UPDATE_MANIFEST_URL,
+    "windows_update_check_on_startup": True,
     "windows_update_channel": "stable",
     "windows_update_timeout_seconds": 15,
-    "macos_update_enabled": False,
-    "macos_update_manifest_url": "",
-    "macos_update_check_on_startup": False,
+    "macos_update_enabled": True,
+    "macos_update_manifest_url": DEFAULT_MACOS_UPDATE_MANIFEST_URL,
+    "macos_update_check_on_startup": True,
     "macos_update_channel": "stable",
     "macos_update_timeout_seconds": 15,
 }
@@ -1500,9 +1506,13 @@ def _normalize_app_config(payload: dict[str, Any] | None) -> dict[str, Any]:
         startup_key = f"{platform}_update_check_on_startup"
         manifest_url = str(config.get(manifest_key) or "").strip()
         if manifest_url in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS:
-            config[manifest_key] = ""
-            config[enabled_key] = False
-            config[startup_key] = False
+            config[manifest_key] = DEFAULT_UPDATE_MANIFEST_URLS[platform]
+            config[enabled_key] = True
+            config[startup_key] = True
+        elif not manifest_url:
+            config[manifest_key] = DEFAULT_UPDATE_MANIFEST_URLS[platform]
+            config[enabled_key] = True
+            config[startup_key] = True
         else:
             config[manifest_key] = manifest_url
     return config
@@ -8550,8 +8560,8 @@ class BossWorkbench(QMainWindow):
         self.macos_update_manifest_url_input = QLineEdit()
         self.macos_update_channel_input = QLineEdit()
         self.macos_update_timeout_input = QLineEdit()
-        self.windows_update_manifest_url_input.setPlaceholderText("https://update.example.com/latest.json")
-        self.macos_update_manifest_url_input.setPlaceholderText("https://update.example.com/latest-macos.json")
+        self.windows_update_manifest_url_input.setPlaceholderText(DEFAULT_WINDOWS_UPDATE_MANIFEST_URL)
+        self.macos_update_manifest_url_input.setPlaceholderText(DEFAULT_MACOS_UPDATE_MANIFEST_URL)
         self.windows_update_channel_input.setPlaceholderText("stable")
         self.macos_update_channel_input.setPlaceholderText("stable")
         self.windows_update_timeout_input.setPlaceholderText("15")

@@ -31,14 +31,15 @@
 
 ## GitHub Secrets
 
-现在只有一个真正需要的可选 secret：
+现在只有一个可选 secret：
 
 - `APP_CONFIG_JSON`
 
 作用：
 
 1. 如果配置了，构建时会把它写成 `app_config.json`
-2. 如果没配置，工作流也会继续构建，只是不注入运行配置
+2. 如果没配置，工作流也会继续构建，并使用代码里的默认更新配置
+3. 默认更新配置会指向 Gitee `release-assets` 分支
 
 可选覆盖：
 
@@ -142,8 +143,10 @@ release-assets/
 {
   "windows_update_enabled": true,
   "windows_update_manifest_url": "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest.json",
+  "windows_update_check_on_startup": true,
   "macos_update_enabled": true,
-  "macos_update_manifest_url": "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest-macos.json"
+  "macos_update_manifest_url": "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest-macos.json",
+  "macos_update_check_on_startup": true
 }
 ```
 
