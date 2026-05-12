@@ -125,6 +125,7 @@ python scripts/generate_windows_update_manifest.py \
 你需要准备：
 
 - 一个 GitHub 仓库镜像：`MilkTeaCoder/mova-esb`
+- GitHub 中当前项目使用分支：`ai-boss-main`
 - Gitee 仓库 `link-wei/ai-boss` 的公开分支 `release-assets`，只存安装包与更新清单
 - GitHub 仓库 secrets：`APP_CONFIG_JSON`
 - macOS 签名与公证 secrets：`MACOS_CERTIFICATE_P12_BASE64`、`MACOS_CERTIFICATE_PASSWORD`、`MACOS_CODESIGN_IDENTITY`、`MACOS_NOTARY_APPLE_ID`、`MACOS_NOTARY_PASSWORD`、`MACOS_NOTARY_TEAM_ID`
@@ -142,7 +143,7 @@ python scripts/generate_windows_update_manifest.py \
 
 ```bash
 git push gitee main
-git push origin main
+git push origin
 git tag v<版本号>
 git push gitee v<版本号>
 git push origin v<版本号>
