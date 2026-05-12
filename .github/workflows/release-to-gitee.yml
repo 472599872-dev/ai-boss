@@ -130,12 +130,10 @@ jobs:
         include:
           - runner: macos-14
             python_arch: arm64
-            target_arch: arm64
             artifact_suffix: ""
             skip_manifest: "0"
           - runner: macos-13
             python_arch: x64
-            target_arch: x86_64
             artifact_suffix: "-x64"
             skip_manifest: "1"
     runs-on: ${{ matrix.runner }}
@@ -173,7 +171,6 @@ jobs:
           chmod +x ./scripts/build_macos_bundle.sh
           args=(
             --base-url "$RELEASE_BASE_URL/releases/$RELEASE_VERSION"
-            --target-arch "${{ matrix.target_arch }}"
           )
           if [ -n "${{ matrix.artifact_suffix }}" ]; then
             args+=(--artifact-suffix "${{ matrix.artifact_suffix }}")
@@ -186,7 +183,7 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-release-${{ matrix.target_arch }}-${{ env.RELEASE_VERSION }}
+          name: macos-release-${{ matrix.python_arch }}-${{ env.RELEASE_VERSION }}
           path: |
             release/*.zip
             release/*.dmg
