@@ -126,7 +126,7 @@ if (-not (Test-Path $installerPath)) {
 if (-not $SkipManifest) {
     $finalBaseUrl = $BaseUrl.Trim()
     if (-not $finalBaseUrl) {
-        $finalBaseUrl = "https://your-domain/releases/$version"
+        $finalBaseUrl = "https://gitee.com/link-wei/ai-boss/raw/release-assets/releases/$version"
     }
     Write-Step "生成 latest.json"
     & $python "scripts\generate_windows_update_manifest.py" `

@@ -1,160 +1,141 @@
-# Gitee 发版与更新链路
+# GitHub 构建，Gitee 分发
 
 目标：
 
-1. Gitee 作为唯一源码仓库
-2. 由 Gitee 的 `Tag Push` WebHook 触发 Windows / macOS 构建机
-3. 构建机自动打包并把安装包、`latest.json`、`latest-macos.json` 发布到你自己的更新目录
-4. 客户端只读取你自己的更新地址，不再依赖 GitHub
+1. Gitee 继续作为主代码仓库
+2. GitHub 只负责运行 GitHub Actions 打包 Windows / macOS
+3. 打包产物自动同步到公开的 Gitee 分发仓
+4. 客户端只从 Gitee 拉取 `latest.json` / `latest-macos.json`
 
-## 目录结构
+## 推荐仓库结构
 
-建议让对外可访问的静态目录长这样：
+当前按你的仓库直接配置：
+
+1. Gitee 主仓库：`https://gitee.com/link-wei/ai-boss.git`
+2. GitHub 构建仓库：`https://github.com/MilkTeaCoder/mova-esb.git`
+3. Gitee 对外分发分支：`release-assets`
+
+也就是不再单独新建分发仓，而是在 `link-wei/ai-boss` 里用 `release-assets` 分支专门承载安装包和更新清单。
+
+`release-assets` 分支目录结构如下：
 
 ```text
-update-root/
+release-assets/
   latest.json
   latest-macos.json
   releases/
-    1.0.16/
-      AIBossWorkbench-Windows-Installer-v1.0.16.exe
-      AIBossWorkbench-Windows-v1.0.16.zip
+    1.0.18/
+      AIBossWorkbench-Windows-Installer-v1.0.18.exe
+      AIBossWorkbench-Windows-v1.0.18.zip
       latest.json
-      AIBossWorkbench-macOS-v1.0.16.zip
-      AIBossWorkbench-macOS-v1.0.16.dmg
+      AIBossWorkbench-macOS-v1.0.18.zip
+      AIBossWorkbench-macOS-v1.0.18.dmg
+      AIBossWorkbench-macOS-v1.0.18-x64.zip
+      AIBossWorkbench-macOS-v1.0.18-x64.dmg
       latest-macos.json
 ```
 
-对应公网地址示例：
+## 工作流
 
-```text
-https://update.example.com/latest.json
-https://update.example.com/latest-macos.json
-https://update.example.com/releases/1.0.16/AIBossWorkbench-Windows-Installer-v1.0.16.exe
-```
+工作流文件：
 
-## 一次性准备
+- [release-to-gitee.yml](/Users/weiyifeng/ai-boss/source_share_clean_20260506/.github/workflows/release-to-gitee.yml)
 
-### 1. 在 Windows 构建机克隆仓库
+执行顺序：
 
-```powershell
-git clone git@gitee.com:link-wei/ai-boss.git C:\ci\ai-boss
-cd C:\ci\ai-boss
-copy release_automation.example.env release_automation.env
-```
+1. 你把代码和 tag 同步到 GitHub 镜像仓
+2. GitHub Actions 在 `windows-latest` 上构建 Windows 安装包
+3. GitHub Actions 在 `macos-14` / `macos-13` 上构建 macOS 安装包
+4. 最后一个发布 job 把所有产物合并
+5. 发布 job 通过 SSH 推送到 `link-wei/ai-boss` 的 `release-assets` 分支
+6. 用户和客户端都只访问 Gitee 分发地址
 
-把 `release_automation.env` 改成 Windows 版本，例如：
+## GitHub Secrets
 
-```text
-GITEE_RELEASE_SECRET=your-secret
-RELEASE_PLATFORM=windows
-RELEASE_LISTEN_HOST=0.0.0.0
-RELEASE_LISTEN_PORT=8787
-RELEASE_REPO_DIR=C:\ci\ai-boss
-RELEASE_GIT_REMOTE=origin
-RELEASE_BASE_URL=https://update.example.com
-RELEASE_PUBLIC_ROOT=D:\update-root
-RELEASE_ASSETS_SUBDIR=releases
-APP_CONFIG_SOURCE_PATH=C:\secure\app_config.json
-```
+必须配置：
 
-启动接收器：
+- `APP_CONFIG_JSON`
+- `GITEE_RELEASE_SSH_KEY`
 
-```powershell
-python .\scripts\gitee_release_receiver.py --env-file .\release_automation.env
-```
+macOS 还必须配置：
 
-### 2. 在 macOS 构建机克隆仓库
+- `MACOS_CERTIFICATE_P12_BASE64`
+- `MACOS_CERTIFICATE_PASSWORD`
+- `MACOS_CODESIGN_IDENTITY`
+- `MACOS_NOTARY_APPLE_ID`
+- `MACOS_NOTARY_PASSWORD`
+- `MACOS_NOTARY_TEAM_ID`
 
-```bash
-git clone git@gitee.com:link-wei/ai-boss.git /opt/ai-boss
-cd /opt/ai-boss
-cp release_automation.example.env release_automation.env
-```
+当前默认值已经写进工作流：
 
-把 `release_automation.env` 改成 macOS 版本，例如：
+- `GITEE_RELEASE_REPO`：默认 `link-wei/ai-boss`
+- `GITEE_RELEASE_BRANCH`：默认 `release-assets`
+- `GITEE_RELEASE_BASE_URL`：默认 `https://gitee.com/link-wei/ai-boss/raw/release-assets`
 
-```text
-GITEE_RELEASE_SECRET=your-secret
-RELEASE_PLATFORM=macos
-RELEASE_LISTEN_HOST=0.0.0.0
-RELEASE_LISTEN_PORT=8788
-RELEASE_REPO_DIR=/opt/ai-boss
-RELEASE_GIT_REMOTE=origin
-RELEASE_BASE_URL=https://update.example.com
-RELEASE_PUBLIC_ROOT=/srv/update-root
-RELEASE_ASSETS_SUBDIR=releases
-APP_CONFIG_SOURCE_PATH=/opt/secure/app_config.json
-```
+这 3 个 secret 现在都可以不配，只有在你以后想换仓库、分支或域名时才需要覆盖。
 
-启动接收器：
-
-```bash
-python3 ./scripts/gitee_release_receiver.py --env-file ./release_automation.env
-```
-
-### 3. 在 Gitee 仓库里配置两个 WebHook
-
-仓库 `管理 -> WebHooks` 中新增两个 `Tag Push` 钩子：
-
-1. Windows：`http://你的-windows-构建机:8787/`
-2. macOS：`http://你的-macos-构建机:8788/`
-
-两个钩子都填同一个密码，并与 `GITEE_RELEASE_SECRET` 保持一致。
+`GITEE_RELEASE_SSH_KEY` 对应的公钥，需要加入 `link-wei/ai-boss` 可写账户的 SSH Keys。
 
 ## 发版方式
 
-每次发版只做这几步：
+日常开发仍然优先推到 Gitee，但用于构建的 tag 必须同时到达 GitHub 仓库 `MilkTeaCoder/mova-esb`。
+
+每次发版：
 
 1. 修改 `app_version.txt`
-2. 提交到 Gitee `main`
-3. 打标签并推送标签
+2. 提交代码
+3. 推送到 Gitee
+4. 推送同一提交到 GitHub 镜像仓
+5. 创建并推送同版本 tag 到两个远端
 
 ```bash
+git push gitee main
 git push origin main
-git tag v1.0.16
-git push origin v1.0.16
+git tag v1.0.18
+git push gitee v1.0.18
+git push origin v1.0.18
 ```
 
-触发后，构建机会自动：
-
-1. `git fetch --tags`
-2. `git checkout v1.0.16`
-3. 注入 `app_config.json`
-4. 打包
-5. 生成 manifest
-6. 把产物发布到 `RELEASE_PUBLIC_ROOT`
-7. 更新根目录 `latest.json` / `latest-macos.json`
+如果 tag 已经存在，也可以在 GitHub Actions 页面手工执行 `workflow_dispatch`，并填入已有 tag。
 
 ## 客户端配置
 
-客户端只配置你自己的更新地址：
+客户端只需要指向 Gitee 分发地址：
 
 ```json
 {
   "windows_update_enabled": true,
-  "windows_update_manifest_url": "https://update.example.com/latest.json",
+  "windows_update_manifest_url": "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest.json",
   "macos_update_enabled": true,
-  "macos_update_manifest_url": "https://update.example.com/latest-macos.json"
+  "macos_update_manifest_url": "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest-macos.json"
 }
 ```
 
-## 手动自测
+对应的版本目录地址就是：
 
-你可以不用等 Gitee，也直接手工 POST：
+- `https://gitee.com/link-wei/ai-boss/raw/release-assets/releases/1.0.18/...`
 
-```bash
-curl -X POST http://127.0.0.1:8787/ \
-  -H 'Content-Type: application/json' \
-  -H 'X-Gitee-Token: your-secret' \
-  -d '{"tag":"v1.0.16"}'
-```
+## 为什么不用 Gitee 本机打包
 
-macOS 构建机同理，把端口换成 `8788`。
+原因很简单：
 
-## 注意事项
+1. Gitee 更适合作为用户访问入口和国内下载源
+2. GitHub Actions 原生提供 Windows / macOS 托管 runner
+3. 你不需要自备一台 Windows 构建机和一台 Mac 构建机常驻在线
 
-- Windows 构建依赖 Inno Setup 6。
-- macOS 构建目前会产出 ZIP 和 DMG，但如果你要更顺滑的安装体验，仍建议补齐签名和公证。
-- `RELEASE_PUBLIC_ROOT` 必须是最终会被公网静态服务暴露出来的目录，或者是被反向同步到该目录的挂载点。
-- 这套链路不依赖 GitHub Release，也不要求客户端访问 Gitee 附件地址。
+## 为什么不用 Gitee Release 附件
+
+不建议把安装包直接传到 Gitee Release 附件：
+
+1. 当前 macOS 安装包通常超过 100MB
+2. Release 附件容量限制更容易成为瓶颈
+3. 专用分发仓分支更容易维护 `latest.json` 和稳定下载地址
+
+## 旧方案
+
+仓库里保留了完全自建构建机的旧方案，相关文件如下：
+
+- [gitee_release_receiver.py](/Users/weiyifeng/ai-boss/source_share_clean_20260506/scripts/gitee_release_receiver.py)
+- [release_automation.example.env](/Users/weiyifeng/ai-boss/source_share_clean_20260506/release_automation.example.env)
+
+如果以后你决定不再依赖 GitHub Actions，可以切回这套 WebHook + 自建构建机方案。

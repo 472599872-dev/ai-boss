@@ -1,0 +1,358 @@
+name: Release To Gitee
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "要构建的版本标签，例如 v1.0.18"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-to-gitee-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_version: ${{ steps.meta.outputs.release_version }}
+      release_base_url: ${{ steps.meta.outputs.release_base_url }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref }}
+
+      - name: Validate release tag and secrets
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG_NAME: ${{ github.event.inputs.tag_name }}
+          GITEE_RELEASE_BASE_URL: ${{ secrets.GITEE_RELEASE_BASE_URL }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${INPUT_TAG_NAME}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$tag" =~ ^v.+$ ]]; then
+            echo "Release tag must start with v, current: $tag" >&2
+            exit 1
+          fi
+          git rev-parse "$tag^{commit}" >/dev/null
+
+          version="$(tr -d '\r\n' < app_version.txt)"
+          if [ -z "$version" ]; then
+            echo "app_version.txt is empty." >&2
+            exit 1
+          fi
+          tag_version="${tag#v}"
+          if [ "$tag_version" != "$version" ]; then
+            echo "Tag version ($tag_version) does not match app_version.txt ($version)." >&2
+            exit 1
+          fi
+
+          release_base_url="${GITEE_RELEASE_BASE_URL%/}"
+          if [ -z "$release_base_url" ]; then
+            release_base_url="https://gitee.com/link-wei/ai-boss/raw/release-assets"
+          fi
+          if [ -z "$release_base_url" ]; then
+            echo "Missing GitHub secret GITEE_RELEASE_BASE_URL." >&2
+            exit 1
+          fi
+
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_base_url=$release_base_url" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    needs: prepare
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+      RELEASE_BASE_URL: ${{ needs.prepare.outputs.release_base_url }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Prepare app config
+        shell: pwsh
+        env:
+          APP_CONFIG_JSON: ${{ secrets.APP_CONFIG_JSON }}
+        run: |
+          if (-not $env:APP_CONFIG_JSON) {
+            throw "Missing GitHub secret APP_CONFIG_JSON."
+          }
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllText((Join-Path $PWD "app_config.json"), $env:APP_CONFIG_JSON, $utf8NoBom)
+
+      - name: Build Windows installer and manifest
+        shell: pwsh
+        run: |
+          $baseUrl = "$env:RELEASE_BASE_URL/releases/$env:RELEASE_VERSION"
+          pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -BaseUrl $baseUrl
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-${{ env.RELEASE_VERSION }}
+          path: |
+            release/*.exe
+            release/*.zip
+            release/latest.json
+          if-no-files-found: error
+          compression-level: 0
+
+  build-macos:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            python_arch: arm64
+            target_arch: arm64
+            artifact_suffix: ""
+            skip_manifest: "0"
+          - runner: macos-13
+            python_arch: x64
+            target_arch: x86_64
+            artifact_suffix: "-x64"
+            skip_manifest: "1"
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+      RELEASE_BASE_URL: ${{ needs.prepare.outputs.release_base_url }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: ${{ matrix.python_arch }}
+
+      - name: Prepare app config
+        env:
+          APP_CONFIG_JSON: ${{ secrets.APP_CONFIG_JSON }}
+        run: |
+          if [ -z "${APP_CONFIG_JSON:-}" ]; then
+            echo "Missing GitHub secret APP_CONFIG_JSON." >&2
+            exit 1
+          fi
+          printf '%s' "$APP_CONFIG_JSON" > app_config.json
+
+      - name: Validate macOS signing secrets
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+        run: |
+          required=(
+            MACOS_CERTIFICATE_P12_BASE64
+            MACOS_CERTIFICATE_PASSWORD
+            MACOS_CODESIGN_IDENTITY
+            MACOS_NOTARY_APPLE_ID
+            MACOS_NOTARY_PASSWORD
+            MACOS_NOTARY_TEAM_ID
+          )
+          for key in "${required[@]}"; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing GitHub secret: $key" >&2
+              exit 1
+            fi
+          done
+
+      - name: Setup macOS signing keychain
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/codesign.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          CERT_PATH="$RUNNER_TEMP/codesign.p12"
+          EXISTING_KEYCHAINS="$(security list-keychains -d user | tr -d '"')"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+          echo "$MACOS_CERTIFICATE_P12_BASE64" | base64 -D > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $EXISTING_KEYCHAINS
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Build macOS bundle and manifest
+        env:
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+        run: |
+          chmod +x ./scripts/build_macos_bundle.sh
+          args=(
+            --base-url "$RELEASE_BASE_URL/releases/$RELEASE_VERSION"
+            --target-arch "${{ matrix.target_arch }}"
+            --codesign-identity "$MACOS_CODESIGN_IDENTITY"
+            --entitlements "scripts/macos.entitlements"
+            --notary-apple-id "$MACOS_NOTARY_APPLE_ID"
+            --notary-password "$MACOS_NOTARY_PASSWORD"
+            --notary-team-id "$MACOS_NOTARY_TEAM_ID"
+          )
+          if [ -n "${{ matrix.artifact_suffix }}" ]; then
+            args+=(--artifact-suffix "${{ matrix.artifact_suffix }}")
+          fi
+          if [ "${{ matrix.skip_manifest }}" = "1" ]; then
+            args+=(--skip-manifest)
+          fi
+          ./scripts/build_macos_bundle.sh "${args[@]}"
+
+      - name: Cleanup macOS signing keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "${KEYCHAIN_PATH}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-${{ matrix.target_arch }}-${{ env.RELEASE_VERSION }}
+          path: |
+            release/*.zip
+            release/*.dmg
+            release/latest-macos*.json
+          if-no-files-found: error
+          compression-level: 0
+
+  publish-gitee:
+    needs:
+      - prepare
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_tag }}
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release-${{ needs.prepare.outputs.release_version }}
+          path: artifact-bundle/windows
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: macos-release-*-${{ needs.prepare.outputs.release_version }}
+          path: artifact-bundle/macos
+          merge-multiple: true
+
+      - name: Merge release files
+        shell: bash
+        run: |
+          mkdir -p release
+          cp -f artifact-bundle/windows/* release/
+          cp -f artifact-bundle/macos/* release/
+          ls -la release
+
+      - name: Setup SSH access to Gitee
+        shell: bash
+        env:
+          GITEE_RELEASE_SSH_KEY: ${{ secrets.GITEE_RELEASE_SSH_KEY }}
+        run: |
+          if [ -z "${GITEE_RELEASE_SSH_KEY:-}" ]; then
+            echo "Missing GitHub secret GITEE_RELEASE_SSH_KEY." >&2
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$GITEE_RELEASE_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan gitee.com >> ~/.ssh/known_hosts
+
+      - name: Checkout Gitee release repo
+        shell: bash
+        env:
+          GITEE_RELEASE_REPO: ${{ secrets.GITEE_RELEASE_REPO }}
+          GITEE_RELEASE_BRANCH: ${{ secrets.GITEE_RELEASE_BRANCH }}
+        run: |
+          release_repo="${GITEE_RELEASE_REPO:-link-wei/ai-boss}"
+          branch="${GITEE_RELEASE_BRANCH:-release-assets}"
+          remote_url="git@gitee.com:${release_repo}.git"
+          if git ls-remote --exit-code --heads "$remote_url" "$branch" >/dev/null 2>&1; then
+            git clone --depth 1 --branch "$branch" "$remote_url" gitee-release
+          else
+            git clone --depth 1 "$remote_url" gitee-release
+            cd gitee-release
+            git switch --orphan "$branch"
+            find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+            cd ..
+          fi
+
+      - name: Publish release files into Gitee repo
+        shell: bash
+        run: |
+          python3 scripts/publish_release_artifacts.py \
+            --platform windows \
+            --public-root "$PWD/gitee-release" \
+            --release-dir "$PWD/release" \
+            --version "${{ needs.prepare.outputs.release_version }}"
+          python3 scripts/publish_release_artifacts.py \
+            --platform macos \
+            --public-root "$PWD/gitee-release" \
+            --release-dir "$PWD/release" \
+            --version "${{ needs.prepare.outputs.release_version }}"
+
+      - name: Commit and push to Gitee
+        shell: bash
+        env:
+          GITEE_RELEASE_BRANCH: ${{ secrets.GITEE_RELEASE_BRANCH }}
+        run: |
+          cd gitee-release
+          branch="${GITEE_RELEASE_BRANCH:-release-assets}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -z "$(git status --short)" ]; then
+            echo "No changes to publish."
+            exit 0
+          fi
+          git add -A
+          git commit -m "release: sync ${{ needs.prepare.outputs.release_tag }}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git pull --rebase origin "$branch"
+          fi
+          git push origin "$branch"

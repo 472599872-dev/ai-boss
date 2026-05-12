@@ -20,6 +20,8 @@ candidate_profiles/
 build/
 dist/
 release/
+downloads/
+updates/
 *.spec.bak
 
 # Misc

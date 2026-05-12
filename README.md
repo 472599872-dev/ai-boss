@@ -93,7 +93,7 @@ run_app.command
 
 ```bash
 python scripts/generate_windows_update_manifest.py \
-  --base-url https://your-domain/releases/1.0.0 \
+  --base-url https://gitee.com/link-wei/ai-boss/raw/release-assets/releases/1.0.0 \
   --installer release/AIBossWorkbench-Windows-Installer-v1.0.0.exe \
   --out release/latest.json
 ```
@@ -106,44 +106,49 @@ python scripts/generate_windows_update_manifest.py \
 - 阿里云 OSS / COS / S3 + 自定义域名/CDN
 - 独立的公开“分发仓” Release（只放安装包，不放源码）
 
-## Gitee 自动发版
+## GitHub 构建，Gitee 分发
 
-仓库已切换为以 Gitee 为源码源头的发布方式。
+当前推荐链路：
 
-推荐链路：
-
-1. Gitee 仓库接收代码和标签
-2. Gitee `Tag Push` WebHook 分别触发 Windows / macOS 构建机
-3. 构建机调用仓库内脚本打包，并把安装包与 `latest.json` 发布到你自己的更新目录
-4. 客户端只访问你自己的更新域名
+1. Gitee 作为主代码仓库
+2. GitHub 作为构建镜像仓库，负责运行 GitHub Actions
+3. GitHub Actions 在托管的 Windows / macOS runner 上打包
+4. GitHub Actions 把安装包和 `latest.json` / `latest-macos.json` 推送到公开的 Gitee 分发仓
+5. 客户端只访问 Gitee 分发地址，不直接访问 GitHub
 
 相关文件：
 
-- [gitee_release_receiver.py](/Users/weiyifeng/ai-boss/source_share_clean_20260506/scripts/gitee_release_receiver.py)
+- [release-to-gitee.yml](/Users/weiyifeng/ai-boss/source_share_clean_20260506/.github/workflows/release-to-gitee.yml)
 - [publish_release_artifacts.py](/Users/weiyifeng/ai-boss/source_share_clean_20260506/scripts/publish_release_artifacts.py)
-- [release_automation.example.env](/Users/weiyifeng/ai-boss/source_share_clean_20260506/release_automation.example.env)
 - [GITEE_RELEASE.md](/Users/weiyifeng/ai-boss/source_share_clean_20260506/docs/GITEE_RELEASE.md)
 
-发版前你需要准备：
+你需要准备：
 
-- 一台 Windows 构建机
-- 一台 macOS 构建机
-- 一个对外可访问的静态更新目录或其挂载点
-- 两个 Gitee 仓库 WebHook（Windows / macOS 各一个）
+- 一个 GitHub 仓库镜像：`MilkTeaCoder/mova-esb`
+- Gitee 仓库 `link-wei/ai-boss` 的公开分支 `release-assets`，只存安装包与更新清单
+- GitHub 仓库 secrets：`APP_CONFIG_JSON`
+- macOS 签名与公证 secrets：`MACOS_CERTIFICATE_P12_BASE64`、`MACOS_CERTIFICATE_PASSWORD`、`MACOS_CODESIGN_IDENTITY`、`MACOS_NOTARY_APPLE_ID`、`MACOS_NOTARY_PASSWORD`、`MACOS_NOTARY_TEAM_ID`
+- Gitee 分发写入 secret：`GITEE_RELEASE_SSH_KEY`
+- 可选覆盖 secrets：`GITEE_RELEASE_REPO`、`GITEE_RELEASE_BRANCH`、`GITEE_RELEASE_BASE_URL`
 
-每次发版只需：
+发版方式：
 
-1. 修改 `app_version.txt`
-2. 提交并推送到 Gitee
-3. 推送同版本标签
+1. 在 Gitee 修改代码和 `app_version.txt`
+2. 把同一提交同步到 GitHub 镜像仓
+3. 推送同版本标签到 GitHub
+4. GitHub Actions 自动打包并把产物同步到 Gitee 分发仓
+
+常用命令：
 
 ```bash
 git push gitee main
+git push origin main
 git tag v<版本号>
 git push gitee v<版本号>
+git push origin v<版本号>
 ```
 
-完整步骤见：
+完整配置见：
 
 - [GITEE_RELEASE.md](/Users/weiyifeng/ai-boss/source_share_clean_20260506/docs/GITEE_RELEASE.md)
 

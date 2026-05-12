@@ -77,6 +77,14 @@ def resolve_macos_assets(release_dir: Path, version: str) -> tuple[Path, list[Pa
     dmg_path = release_dir / f"AIBossWorkbench-macOS-v{version}.dmg"
     if dmg_path.exists():
         assets.append(dmg_path)
+    extra_patterns = (
+        f"AIBossWorkbench-macOS-v{version}-*.zip",
+        f"AIBossWorkbench-macOS-v{version}-*.dmg",
+    )
+    for pattern in extra_patterns:
+        for path in sorted(release_dir.glob(pattern)):
+            if path not in assets:
+                assets.append(path)
     return manifest, assets
 
 
