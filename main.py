@@ -361,6 +361,16 @@ DEFAULT_FEISHU_FIELD_MAPPING = {
     "last_sync_at": "",
     "app_name": "",
 }
+LEGACY_PUBLIC_WINDOWS_UPDATE_MANIFEST_URL = (
+    "https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest.json"
+)
+LEGACY_PUBLIC_MACOS_UPDATE_MANIFEST_URL = (
+    "https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest-macos.json"
+)
+BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS = {
+    LEGACY_PUBLIC_WINDOWS_UPDATE_MANIFEST_URL,
+    LEGACY_PUBLIC_MACOS_UPDATE_MANIFEST_URL,
+}
 DEFAULT_FEISHU_SETTINGS = {
     "feishu_app_id": "",
     "feishu_app_secret": "",
@@ -391,14 +401,14 @@ DEFAULT_APP_CONFIG = {
     "feishu_bitable_api_base": "https://open.feishu.cn/open-apis/bitable/v1",
     "feishu_oauth_redirect_uri": "http://127.0.0.1:17862/callback",
     "feishu_oauth_scope": "contact:user.base:readonly contact:user.email:readonly offline_access",
-    "feishu_bitable_app_token": "Zof2bcF7Aax3C9sa0YEcnwC7nuh",
-    "feishu_bitable_table_id": "tblxcMFioxGxqe4l",
-    "feishu_bitable_view_id": "vewvtwSbdF",
-    "feishu_bitable_source_url": "https://dreametech.feishu.cn/base/Zof2bcF7Aax3C9sa0YEcnwC7nuh?table=tblxcMFioxGxqe4l&view=vewvtwSbdF",
+    "feishu_bitable_app_token": "",
+    "feishu_bitable_table_id": "",
+    "feishu_bitable_view_id": "",
+    "feishu_bitable_source_url": "",
     "feishu_registry_required": True,
     "feishu_usage_daily_limit": 0,
     "feishu_usage_field_mapping": DEFAULT_FEISHU_FIELD_MAPPING,
-    "llm_bridge_url": "https://ai-it.mova-tech.com/api/hr/resume/screening",
+    "llm_bridge_url": "",
     "llm_bridge_timeout_seconds": 60,
     "llm_bridge_ca_bundle_path": "",
     "dify_api_key": "",
@@ -406,14 +416,14 @@ DEFAULT_APP_CONFIG = {
     "llm_bridge_auth_token": "",
     "dify_user_id": "boss-workbench",
     "boss_workbench_autoscan": False,
-    "windows_update_enabled": True,
-    "windows_update_manifest_url": "https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest.json",
-    "windows_update_check_on_startup": True,
+    "windows_update_enabled": False,
+    "windows_update_manifest_url": "",
+    "windows_update_check_on_startup": False,
     "windows_update_channel": "stable",
     "windows_update_timeout_seconds": 15,
-    "macos_update_enabled": True,
-    "macos_update_manifest_url": "https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest-macos.json",
-    "macos_update_check_on_startup": True,
+    "macos_update_enabled": False,
+    "macos_update_manifest_url": "",
+    "macos_update_check_on_startup": False,
     "macos_update_channel": "stable",
     "macos_update_timeout_seconds": 15,
 }
@@ -1484,6 +1494,17 @@ def _normalize_app_config(payload: dict[str, Any] | None) -> dict[str, Any]:
             config["feishu_usage_field_mapping"] = dict(DEFAULT_FEISHU_FIELD_MAPPING)
     elif not isinstance(mapping, dict):
         config["feishu_usage_field_mapping"] = dict(DEFAULT_FEISHU_FIELD_MAPPING)
+    for platform in ("windows", "macos"):
+        manifest_key = f"{platform}_update_manifest_url"
+        enabled_key = f"{platform}_update_enabled"
+        startup_key = f"{platform}_update_check_on_startup"
+        manifest_url = str(config.get(manifest_key) or "").strip()
+        if manifest_url in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS:
+            config[manifest_key] = ""
+            config[enabled_key] = False
+            config[startup_key] = False
+        else:
+            config[manifest_key] = manifest_url
     return config
 
 
@@ -1541,6 +1562,9 @@ def load_app_config(force: bool = False) -> dict[str, Any]:
             save_app_config(config)
             return config
     config = _normalize_app_config(raw)
+    if config != raw:
+        save_app_config(config)
+        return config
     _APP_CONFIG_CACHE = config
     _APP_CONFIG_MTIME_NS = mtime_ns
     return config
@@ -3201,7 +3225,7 @@ class CandidateExtractor:
             or os.getenv("LLM_BRIDGE_URL", "").strip()
             or os.getenv("DIFY_CHAT_URL", "").strip()
         )
-        url = custom_url or "https://ai-it.mova-tech.com/api/hr/resume/screening"
+        url = custom_url
         timeout = 60
         try:
             timeout = max(
@@ -8521,6 +8545,59 @@ class BossWorkbench(QMainWindow):
         self.windows_update_manifest_url_input = QLineEdit()
         self.windows_update_channel_input = QLineEdit()
         self.windows_update_timeout_input = QLineEdit()
+        self.macos_update_enabled_input = QCheckBox("启用在线更新")
+        self.macos_update_startup_input = QCheckBox("启动后自动检查")
+        self.macos_update_manifest_url_input = QLineEdit()
+        self.macos_update_channel_input = QLineEdit()
+        self.macos_update_timeout_input = QLineEdit()
+        self.windows_update_manifest_url_input.setPlaceholderText("https://update.example.com/latest.json")
+        self.macos_update_manifest_url_input.setPlaceholderText("https://update.example.com/latest-macos.json")
+        self.windows_update_channel_input.setPlaceholderText("stable")
+        self.macos_update_channel_input.setPlaceholderText("stable")
+        self.windows_update_timeout_input.setPlaceholderText("15")
+        self.macos_update_timeout_input.setPlaceholderText("15")
+
+        update_settings_box = QGroupBox("在线更新配置")
+        update_settings_box.setObjectName("AccountCard")
+        update_settings_layout = QVBoxLayout(update_settings_box)
+        update_settings_layout.setSpacing(12)
+        update_note = QLabel(
+            "请使用你自己的更新域名、对象存储或独立分发仓清单，不要再填写公开源码仓库的 Releases 地址。"
+        )
+        update_note.setWordWrap(True)
+        update_note.setObjectName("Log")
+        update_settings_layout.addWidget(update_note)
+
+        update_form = QFormLayout()
+        self.configure_form_layout(update_form)
+        windows_flag_row = QWidget()
+        windows_flag_layout = QHBoxLayout(windows_flag_row)
+        windows_flag_layout.setContentsMargins(0, 0, 0, 0)
+        windows_flag_layout.setSpacing(12)
+        windows_flag_layout.addWidget(self.windows_update_enabled_input)
+        windows_flag_layout.addWidget(self.windows_update_startup_input)
+        windows_flag_layout.addStretch(1)
+        macos_flag_row = QWidget()
+        macos_flag_layout = QHBoxLayout(macos_flag_row)
+        macos_flag_layout.setContentsMargins(0, 0, 0, 0)
+        macos_flag_layout.setSpacing(12)
+        macos_flag_layout.addWidget(self.macos_update_enabled_input)
+        macos_flag_layout.addWidget(self.macos_update_startup_input)
+        macos_flag_layout.addStretch(1)
+        update_form.addRow("Windows 更新", windows_flag_row)
+        update_form.addRow("Windows 清单", self.windows_update_manifest_url_input)
+        update_form.addRow("Windows 通道", self.windows_update_channel_input)
+        update_form.addRow("Windows 超时(秒)", self.windows_update_timeout_input)
+        update_form.addRow("macOS 更新", macos_flag_row)
+        update_form.addRow("macOS 清单", self.macos_update_manifest_url_input)
+        update_form.addRow("macOS 通道", self.macos_update_channel_input)
+        update_form.addRow("macOS 超时(秒)", self.macos_update_timeout_input)
+        update_settings_layout.addLayout(update_form)
+        save_update_button = QPushButton("保存在线更新配置")
+        save_update_button.setObjectName("PrimaryAction")
+        save_update_button.clicked.connect(self.save_feishu_settings)
+        update_settings_layout.addWidget(save_update_button)
+        layout.addWidget(update_settings_box)
         layout.addStretch()
         return page
 
@@ -8586,14 +8663,34 @@ class BossWorkbench(QMainWindow):
         self.feishu_bitable_table_id_input.setText(self.feishu_client.setting("feishu_bitable_table_id"))
         self.feishu_daily_limit_input.setText(self.feishu_client.setting("feishu_usage_daily_limit"))
         self.feishu_field_mapping_edit.setPlainText(self.feishu_client.setting("feishu_usage_field_mapping"))
-        self.windows_update_enabled_input.setChecked(app_config_bool("windows_update_enabled", True))
-        self.windows_update_startup_input.setChecked(app_config_bool("windows_update_check_on_startup", True))
+        self.windows_update_enabled_input.setChecked(app_config_bool("windows_update_enabled", False))
+        self.windows_update_startup_input.setChecked(app_config_bool("windows_update_check_on_startup", False))
         self.windows_update_manifest_url_input.setText(app_config_string("windows_update_manifest_url", ""))
         self.windows_update_channel_input.setText(app_config_string("windows_update_channel", "stable"))
         self.windows_update_timeout_input.setText(app_config_string("windows_update_timeout_seconds", "15"))
+        self.macos_update_enabled_input.setChecked(app_config_bool("macos_update_enabled", False))
+        self.macos_update_startup_input.setChecked(app_config_bool("macos_update_check_on_startup", False))
+        self.macos_update_manifest_url_input.setText(app_config_string("macos_update_manifest_url", ""))
+        self.macos_update_channel_input.setText(app_config_string("macos_update_channel", "stable"))
+        self.macos_update_timeout_input.setText(app_config_string("macos_update_timeout_seconds", "15"))
         self.refresh_update_status()
 
     def save_feishu_settings(self) -> None:
+        windows_manifest_url = self.windows_update_manifest_url_input.text().strip()
+        macos_manifest_url = self.macos_update_manifest_url_input.text().strip()
+        blocked_platforms: list[str] = []
+        if windows_manifest_url in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS:
+            blocked_platforms.append("Windows")
+        if macos_manifest_url in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS:
+            blocked_platforms.append("macOS")
+        if blocked_platforms:
+            joined = "、".join(blocked_platforms)
+            QMessageBox.warning(
+                self,
+                "更新地址不安全",
+                f"{joined} 更新地址仍指向公开源码仓库，请改成你自己的更新清单地址。",
+            )
+            return
         values = {
             "feishu_app_id": self.feishu_app_id_input.text().strip(),
             "feishu_app_secret": self.feishu_app_secret_input.text().strip(),
@@ -8611,9 +8708,14 @@ class BossWorkbench(QMainWindow):
             "feishu_usage_field_mapping": self.feishu_field_mapping_edit.toPlainText().strip(),
             "windows_update_enabled": self.windows_update_enabled_input.isChecked(),
             "windows_update_check_on_startup": self.windows_update_startup_input.isChecked(),
-            "windows_update_manifest_url": self.windows_update_manifest_url_input.text().strip(),
+            "windows_update_manifest_url": windows_manifest_url,
             "windows_update_channel": self.windows_update_channel_input.text().strip() or "stable",
             "windows_update_timeout_seconds": max(5, safe_int(self.windows_update_timeout_input.text().strip(), 15)),
+            "macos_update_enabled": self.macos_update_enabled_input.isChecked(),
+            "macos_update_check_on_startup": self.macos_update_startup_input.isChecked(),
+            "macos_update_manifest_url": macos_manifest_url,
+            "macos_update_channel": self.macos_update_channel_input.text().strip() or "stable",
+            "macos_update_timeout_seconds": max(5, safe_int(self.macos_update_timeout_input.text().strip(), 15)),
         }
         mapping_raw = values["feishu_usage_field_mapping"] or DEFAULT_FEISHU_SETTINGS["feishu_usage_field_mapping"]
         try:
@@ -8630,7 +8732,7 @@ class BossWorkbench(QMainWindow):
         self.load_feishu_settings()
         self.refresh_feishu_session_views()
         self.refresh_usage_summary()
-        self.append_log("飞书、用量与 Windows 更新配置已保存。")
+        self.append_log("飞书与在线更新配置已保存。")
 
     def refresh_feishu_session_views(self) -> None:
         if self.feishu_session:
@@ -8780,11 +8882,11 @@ class BossWorkbench(QMainWindow):
 
     def schedule_auto_update_check(self, delay_ms: int = 0) -> None:
         if sys.platform.startswith("win"):
-            enabled = app_config_bool("windows_update_enabled", True)
-            auto_check = app_config_bool("windows_update_check_on_startup", True)
+            enabled = app_config_bool("windows_update_enabled", False)
+            auto_check = app_config_bool("windows_update_check_on_startup", False)
         elif sys.platform == "darwin":
-            enabled = app_config_bool("macos_update_enabled", True)
-            auto_check = app_config_bool("macos_update_check_on_startup", True)
+            enabled = app_config_bool("macos_update_enabled", False)
+            auto_check = app_config_bool("macos_update_check_on_startup", False)
         else:
             return
         if not enabled:
@@ -8802,13 +8904,13 @@ class BossWorkbench(QMainWindow):
         timeout = 15
         if sys.platform.startswith("win"):
             platform_name = "Windows"
-            enabled = app_config_bool("windows_update_enabled", True)
+            enabled = app_config_bool("windows_update_enabled", False)
             manifest_url = app_config_string("windows_update_manifest_url", "").strip()
             channel = app_config_string("windows_update_channel", "stable").strip() or "stable"
             timeout = max(5, safe_int(app_config_string("windows_update_timeout_seconds", "15"), 15))
         elif sys.platform == "darwin":
             platform_name = "macOS"
-            enabled = app_config_bool("macos_update_enabled", True)
+            enabled = app_config_bool("macos_update_enabled", False)
             manifest_url = app_config_string("macos_update_manifest_url", "").strip()
             channel = app_config_string("macos_update_channel", "stable").strip() or "stable"
             timeout = max(5, safe_int(app_config_string("macos_update_timeout_seconds", "15"), 15))

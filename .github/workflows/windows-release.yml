@@ -68,11 +68,18 @@ jobs:
 
       - name: Build Windows installer and manifest
         shell: pwsh
+        env:
+          RELEASE_BASE_URL: ${{ vars.RELEASE_BASE_URL }}
+          RELEASE_BASE_URL_SECRET: ${{ secrets.RELEASE_BASE_URL }}
         run: |
-          if ("${{ github.event_name }}" -eq "push") {
-            $baseUrl = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+          $baseUrl = "$env:RELEASE_BASE_URL".Trim()
+          if (-not $baseUrl) {
+            $baseUrl = "$env:RELEASE_BASE_URL_SECRET".Trim()
+          }
+          if ($baseUrl) {
             pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -BaseUrl $baseUrl
           } else {
+            Write-Warning "RELEASE_BASE_URL is empty. Build will skip manifest generation to avoid binding clients to the source repository."
             pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -SkipManifest
           }
 
@@ -87,7 +94,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Publish GitHub Release assets
-        if: github.event_name == 'push' || inputs.publish_release == true
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -96,4 +103,4 @@ jobs:
             release/*.exe
             release/*.zip
             release/latest.json
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false

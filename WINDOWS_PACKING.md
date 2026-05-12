@@ -6,15 +6,16 @@
 - PowerShell（系统自带）
 - 可选：Inno Setup 6（生成安装器）
 
-## 0. 自动打包自动发布（推荐）
+## 0. 自动打包（推荐）
 
 仓库已内置 GitHub Actions 工作流：
 
 - `.github/workflows/windows-release.yml`
 
-首次使用自动发布前，需要在仓库 Actions Secrets 中配置：
+首次使用前，需要在仓库 Actions Secrets / Variables 中配置：
 
-- `APP_CONFIG_JSON`：完整 `app_config.json` 文本（用于把飞书配置一并打进安装包）
+- `APP_CONFIG_JSON`：完整 `app_config.json` 文本（用于把飞书配置和更新地址一并打进安装包）
+- `RELEASE_BASE_URL`：你的公开更新根地址，例如 `https://update.example.com/releases/1.0.1`
 
 每次发版只需：
 
@@ -30,12 +31,14 @@ git push origin v1.0.1
 GitHub 会自动：
 
 1. 打 Windows 安装包
-2. 生成 `latest.json`
-3. 发布到该 tag 对应的 Release
+2. 在已配置 `RELEASE_BASE_URL` 时生成 `latest.json`
+3. 上传 CI 产物供你分发
 
-客户端固定更新地址可用：
+不要把客户端固定到公开源码仓库的 Release 地址。推荐做法是：
 
-- `https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest.json`
+1. 源码仓库保持 private
+2. 安装包和 `latest.json` 上传到自有域名 / OSS / CDN
+3. 或者单独建一个只放安装包的公开分发仓
 
 ## 2. 生成可运行目录 + ZIP
 在项目根目录双击：

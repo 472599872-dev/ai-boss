@@ -16,18 +16,18 @@ run_app.command
 
 ## 配置文件
 
-项目根目录下已经提供了配置文件：
+仓库里只保留配置模板：
 
-- [app_config.json](/Users/weiyifeng/ai-boss/source_share_clean_20260506/app_config.json)
+- [app_config.example.json](/Users/weiyifeng/ai-boss/source_share_clean_20260506/app_config.example.json)
 
-后续修改飞书凭证、飞书云文档参数、Dify 网关地址、Token 限额等，只需要改这个文件，不需要改代码。
+首次使用时请复制一份为本地 `app_config.json`，再填写飞书凭证、飞书云文档参数、网关地址和在线更新地址。真实 `app_config.json` 只用于本地运行或打包注入，不要提交到公开仓库。
 
 说明：
 
 - 开发态直接读取项目根目录下的 `app_config.json`
 - Windows 安装版会把实际运行配置写到 `%APPDATA%\AIBossWorkbench\app_config.json`
-- Windows 在线更新也通过这个配置文件控制，关键字段是 `windows_update_manifest_url`
-- 你提供的飞书人员额度表 `app_token` 和 `table_id` 已经预填进配置文件
+- 在线更新也通过这个配置文件控制，关键字段是 `windows_update_manifest_url` 和 `macos_update_manifest_url`
+- `app_config.json` 已被 `.gitignore` 忽略，公开仓库只应保留示例文件
 
 ## 当前能力
 
@@ -41,7 +41,7 @@ run_app.command
 - 本地 SQLite 持久化：岗位、候选人、扫描日志、动作日志。
 - 记录 AI 调用 token 使用量，支持本地逐次记账、飞书人员额度表同步、按人充值余额拦截。
 - 如果自建 Dify / 网关返回 usage 信息，则记录精确 token；否则退化为按文本长度估算。
-- Windows 版本支持远程发布与在线更新：客户端会读取 `latest.json`，下载新版安装器并在退出后启动安装。
+- Windows / macOS 支持远程发布与在线更新：客户端会读取你自己的 `latest.json` 清单，下载新版安装包并在退出后启动安装。
 
 ## 说明
 
@@ -56,9 +56,9 @@ run_app.command
 - 日志会记录候选人列表识别结果、实际点击的人选文本、在线简历按钮识别方式、详情文本长度和预览。
 - 飞书登录态保存在本地 SQLite 的 `app_settings` 中；运行配置保存在 `app_config.json`；AI 用量明细保存在 `ai_usage_logs`。
 
-## Windows 在线更新
+## 在线更新
 
-应用会读取 `windows_update_manifest_url` 指向的远程 JSON 清单。清单里需要至少提供：
+应用会读取 `windows_update_manifest_url` 或 `macos_update_manifest_url` 指向的远程 JSON 清单。清单里需要至少提供：
 
 - `version`
 - `windows.installer_url`
@@ -73,6 +73,17 @@ run_app.command
 4. 下载新版安装器到用户目录
 5. 校验 `sha256`
 6. 退出当前程序并启动安装器
+
+## 发布原则
+
+不要让客户端直连公开源码仓库。
+
+推荐结构：
+
+1. 源码仓库设为 private
+2. CI 只负责打包产物
+3. 安装包和 `latest.json` 上传到你自己的域名 / OSS / CDN，或单独的公开分发仓
+4. 客户端只配置分发地址，不配置源码仓地址
 
 ## Windows 发布流程
 
@@ -92,10 +103,10 @@ python scripts/generate_windows_update_manifest.py \
 
 推荐的发布位置：
 
-- GitHub Releases
-- 阿里云 OSS + 自定义域名/CDN
+- 阿里云 OSS / COS / S3 + 自定义域名/CDN
+- 独立的公开“分发仓” Release（只放安装包，不放源码）
 
-## GitHub 自动发布（已配置）
+## GitHub 自动打包（可选）
 
 仓库已包含工作流：
 
@@ -103,7 +114,8 @@ python scripts/generate_windows_update_manifest.py \
 
 发布前请在仓库 `Settings -> Secrets and variables -> Actions` 配置：
 
-- `APP_CONFIG_JSON`：完整的 `app_config.json` 内容（包含飞书 App ID / App Secret 等）
+- `APP_CONFIG_JSON`：完整的 `app_config.json` 内容（包含飞书 App ID / App Secret 和你的更新地址）
+- `RELEASE_BASE_URL`：你的公开更新根地址，例如 `https://update.example.com/releases/1.0.1`
 
 触发规则：
 
@@ -120,12 +132,10 @@ git push origin v1.0.1
 
 1. 在 Windows runner 打包
 2. 生成安装器 `release/AIBossWorkbench-Windows-Installer-v版本号.exe`
-3. 生成 `release/latest.json`
-4. 发布到 GitHub Releases（同一个 tag 的 release 资产）
+3. 当 `RELEASE_BASE_URL` 已配置时生成 `release/latest.json`
+4. 上传 CI 产物，供你再分发到自有更新地址
 
-客户端建议固定使用这个更新清单地址（始终指向最新 release）：
-
-- `https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest.json`
+如果你明确要把安装包发布到独立分发仓，再单独触发发布步骤；不要把客户端固定绑定到公开源码仓的 Release 地址。
 
 ## 飞书与 Token 用量配置
 
