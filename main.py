@@ -253,6 +253,33 @@ def safe_url_for_log(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
+def split_update_manifest_urls(value: str) -> list[str]:
+    seen: set[str] = set()
+    urls: list[str] = []
+    for item in re.split(r"[\r\n,;|]+", str(value or "").strip()):
+        candidate = item.strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        urls.append(candidate)
+    return urls
+
+
+def format_update_request_error(url: str, exc: BaseException) -> str:
+    safe_url = safe_url_for_log(url)
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code == 403 and "gitee.com" in safe_url and "/raw/" in safe_url:
+            return (
+                f"{safe_url} 返回 403。Gitee raw 地址会拦截程序化下载，"
+                "请改用 Gitee Pages 或你自己的静态文件域名。"
+            )
+        return f"{safe_url} 返回 HTTP {exc.code}。"
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", "")
+        return f"无法连接 {safe_url}：{reason or exc}"
+    return str(exc)
+
+
 def write_feishu_login_log(event: str, payload: dict[str, Any] | None = None) -> None:
     LOG_DIR.mkdir(exist_ok=True)
     record = {
@@ -367,12 +394,21 @@ LEGACY_PUBLIC_WINDOWS_UPDATE_MANIFEST_URL = (
 LEGACY_PUBLIC_MACOS_UPDATE_MANIFEST_URL = (
     "https://github.com/MilkTeaCoder/ai-boss-workbench/releases/latest/download/latest-macos.json"
 )
+LEGACY_GITEE_RAW_WINDOWS_UPDATE_MANIFEST_URL = (
+    "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest.json"
+)
+LEGACY_GITEE_RAW_MACOS_UPDATE_MANIFEST_URL = (
+    "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest-macos.json"
+)
 BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS = {
     LEGACY_PUBLIC_WINDOWS_UPDATE_MANIFEST_URL,
     LEGACY_PUBLIC_MACOS_UPDATE_MANIFEST_URL,
+    LEGACY_GITEE_RAW_WINDOWS_UPDATE_MANIFEST_URL,
+    LEGACY_GITEE_RAW_MACOS_UPDATE_MANIFEST_URL,
 }
-DEFAULT_WINDOWS_UPDATE_MANIFEST_URL = "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest.json"
-DEFAULT_MACOS_UPDATE_MANIFEST_URL = "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest-macos.json"
+DEFAULT_GITEE_PAGES_UPDATE_BASE_URL = "https://link-wei.gitee.io/ai-boss"
+DEFAULT_WINDOWS_UPDATE_MANIFEST_URL = f"{DEFAULT_GITEE_PAGES_UPDATE_BASE_URL}/latest.json"
+DEFAULT_MACOS_UPDATE_MANIFEST_URL = f"{DEFAULT_GITEE_PAGES_UPDATE_BASE_URL}/latest-macos.json"
 DEFAULT_UPDATE_MANIFEST_URLS = {
     "windows": DEFAULT_WINDOWS_UPDATE_MANIFEST_URL,
     "macos": DEFAULT_MACOS_UPDATE_MANIFEST_URL,
@@ -1228,7 +1264,7 @@ def open_local_path(path: Path) -> None:
     subprocess.Popen(["xdg-open", target])
 
 
-def fetch_json(url: str, timeout: int = 15) -> dict[str, Any]:
+def fetch_json(url: str, timeout: int = 15) -> tuple[dict[str, Any], str]:
     req = urllib.request.Request(
         url,
         headers={
@@ -1237,12 +1273,32 @@ def fetch_json(url: str, timeout: int = 15) -> dict[str, Any]:
         },
         method="GET",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = resp.read().decode("utf-8", errors="ignore")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+            final_url = resp.geturl()
+    except Exception as exc:
+        raise RuntimeError(format_update_request_error(url, exc)) from exc
     payload = json.loads(body)
     if not isinstance(payload, dict):
         raise ValueError("更新清单必须是 JSON 对象。")
-    return payload
+    return payload, final_url
+
+
+def fetch_json_from_candidates(urls_text: str, timeout: int = 15) -> tuple[dict[str, Any], str]:
+    candidates = split_update_manifest_urls(urls_text)
+    if not candidates:
+        raise ValueError("未配置有效的更新清单 URL。")
+    errors: list[str] = []
+    for candidate in candidates:
+        try:
+            return fetch_json(candidate, timeout=timeout)
+        except Exception as exc:
+            errors.append(str(exc))
+    if len(errors) == 1:
+        raise RuntimeError(errors[0])
+    error_lines = "\n".join(f"- {message}" for message in errors)
+    raise RuntimeError(f"所有更新清单地址都不可用：\n{error_lines}")
 
 
 def parse_windows_update_manifest(payload: dict[str, Any], manifest_url: str) -> UpdateInfo:
@@ -1349,16 +1405,16 @@ def select_update_channel_payload(payload: dict[str, Any], channel: str) -> dict
 
 
 def fetch_windows_update(manifest_url: str, current_version: str, channel: str = "stable", timeout: int = 15) -> UpdateInfo | None:
-    payload = fetch_json(manifest_url, timeout=timeout)
-    info = parse_windows_update_manifest(select_update_channel_payload(payload, channel), manifest_url)
+    payload, resolved_url = fetch_json_from_candidates(manifest_url, timeout=timeout)
+    info = parse_windows_update_manifest(select_update_channel_payload(payload, channel), resolved_url)
     if not is_newer_version(info.version, current_version):
         return None
     return info
 
 
 def fetch_macos_update(manifest_url: str, current_version: str, channel: str = "stable", timeout: int = 15) -> UpdateInfo | None:
-    payload = fetch_json(manifest_url, timeout=timeout)
-    info = parse_macos_update_manifest(select_update_channel_payload(payload, channel), manifest_url)
+    payload, resolved_url = fetch_json_from_candidates(manifest_url, timeout=timeout)
+    info = parse_macos_update_manifest(select_update_channel_payload(payload, channel), resolved_url)
     if not is_newer_version(info.version, current_version):
         return None
     return info
@@ -1397,13 +1453,16 @@ def download_update_package(info: UpdateInfo, target_dir: Path) -> Path:
         )
         hasher = hashlib.sha256()
         total = 0
-        with urllib.request.urlopen(req) as resp, temp_path.open("wb") as handle:
-            for chunk in iter(lambda: resp.read(1024 * 1024), b""):
-                if not chunk:
-                    break
-                total += len(chunk)
-                hasher.update(chunk)
-                handle.write(chunk)
+        try:
+            with urllib.request.urlopen(req) as resp, temp_path.open("wb") as handle:
+                for chunk in iter(lambda: resp.read(1024 * 1024), b""):
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    hasher.update(chunk)
+                    handle.write(chunk)
+        except Exception as exc:
+            raise RuntimeError(format_update_request_error(info.package_url, exc)) from exc
         digest = hasher.hexdigest()
         if digest != info.sha256:
             raise ValueError(f"安装包校验失败，期望 {info.sha256}，实际 {digest}。")
@@ -8572,7 +8631,7 @@ class BossWorkbench(QMainWindow):
         update_settings_layout = QVBoxLayout(update_settings_box)
         update_settings_layout.setSpacing(12)
         update_note = QLabel(
-            "请使用你自己的更新域名、对象存储或独立分发仓清单，不要再填写公开源码仓库的 Releases 地址。"
+            "请使用你自己的静态更新地址。Gitee raw 链接会返回 403，建议使用 Gitee Pages；多个清单地址可用分号分隔。"
         )
         update_note.setWordWrap(True)
         update_note.setObjectName("Log")

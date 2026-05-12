@@ -47,9 +47,9 @@
 
 默认值已经写进工作流：
 
-- `https://gitee.com/link-wei/ai-boss/raw/release-assets`
+- `https://link-wei.gitee.io/ai-boss`
 
-这个值用于生成 `latest.json` / `latest-macos.json` 里的下载地址。你后续如果就是手动同步到这个分支，就连这个 secret 都不用配。
+这个值用于生成 `latest.json` / `latest-macos.json` 里的下载地址。Gitee 的 `raw` 地址会对程序化下载返回 403，自动更新必须改走 Gitee Pages 或你自己的静态文件域名。
 
 ## 发版方式
 
@@ -142,10 +142,10 @@ release-assets/
 ```json
 {
   "windows_update_enabled": true,
-  "windows_update_manifest_url": "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest.json",
+  "windows_update_manifest_url": "https://link-wei.gitee.io/ai-boss/latest.json",
   "windows_update_check_on_startup": true,
   "macos_update_enabled": true,
-  "macos_update_manifest_url": "https://gitee.com/link-wei/ai-boss/raw/release-assets/latest-macos.json",
+  "macos_update_manifest_url": "https://link-wei.gitee.io/ai-boss/latest-macos.json",
   "macos_update_check_on_startup": true
 }
 ```

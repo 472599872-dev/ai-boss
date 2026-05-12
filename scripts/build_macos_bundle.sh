@@ -197,7 +197,7 @@ fi
 if [[ "$SKIP_MANIFEST" != "1" ]]; then
   FINAL_BASE_URL="$BASE_URL"
   if [[ -z "$FINAL_BASE_URL" ]]; then
-    FINAL_BASE_URL="https://gitee.com/link-wei/ai-boss/raw/release-assets/releases/${VERSION}"
+    FINAL_BASE_URL="https://link-wei.gitee.io/ai-boss/releases/${VERSION}"
   fi
   step "生成 latest-macos.json"
   "$PYTHON" scripts/generate_macos_update_manifest.py \

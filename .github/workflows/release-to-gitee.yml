@@ -63,7 +63,7 @@ jobs:
 
           release_base_url="${GITEE_RELEASE_BASE_URL%/}"
           if [ -z "$release_base_url" ]; then
-            release_base_url="https://gitee.com/link-wei/ai-boss/raw/release-assets"
+            release_base_url="https://link-wei.gitee.io/ai-boss"
           fi
 
           echo "release_tag=$tag" >> "$GITHUB_OUTPUT"

@@ -93,7 +93,7 @@ run_app.command
 
 ```bash
 python scripts/generate_windows_update_manifest.py \
-  --base-url https://gitee.com/link-wei/ai-boss/raw/release-assets/releases/1.0.0 \
+  --base-url https://link-wei.gitee.io/ai-boss/releases/1.0.0 \
   --installer release/AIBossWorkbench-Windows-Installer-v1.0.0.exe \
   --out release/latest.json
 ```
