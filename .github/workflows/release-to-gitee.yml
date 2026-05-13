@@ -24,7 +24,6 @@ jobs:
     outputs:
       release_tag: ${{ steps.meta.outputs.release_tag }}
       release_version: ${{ steps.meta.outputs.release_version }}
-      release_base_url: ${{ steps.meta.outputs.release_base_url }}
       oss_prefix: ${{ steps.meta.outputs.oss_prefix }}
     steps:
       - name: Checkout source
@@ -38,10 +37,6 @@ jobs:
         shell: bash
         env:
           INPUT_TAG_NAME: ${{ github.event.inputs.tag_name }}
-          GITEE_RELEASE_BASE_URL: ${{ secrets.GITEE_RELEASE_BASE_URL }}
-          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
-          OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
-          OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL }}
           OSS_PREFIX: ${{ secrets.OSS_PREFIX }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
@@ -69,25 +64,9 @@ jobs:
           oss_prefix="${OSS_PREFIX:-ai-boss}"
           oss_prefix="${oss_prefix#/}"
           oss_prefix="${oss_prefix%/}"
-          oss_public_base_url="${OSS_PUBLIC_BASE_URL%/}"
-          if [ -z "$oss_public_base_url" ] && [ -n "$OSS_BUCKET_NAME" ] && [ -n "$OSS_ENDPOINT" ]; then
-            oss_endpoint="${OSS_ENDPOINT#http://}"
-            oss_endpoint="${oss_endpoint#https://}"
-            oss_endpoint="${oss_endpoint%/}"
-            oss_public_base_url="https://${OSS_BUCKET_NAME}.${oss_endpoint}"
-            if [ -n "$oss_prefix" ]; then
-              oss_public_base_url="${oss_public_base_url}/${oss_prefix}"
-            fi
-          fi
-
-          release_base_url="${oss_public_base_url:-${GITEE_RELEASE_BASE_URL%/}}"
-          if [ -z "$release_base_url" ]; then
-            echo "OSS_PUBLIC_BASE_URL/GITEE_RELEASE_BASE_URL is not set. Workflow will build packages only and skip update manifest generation."
-          fi
 
           echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
           echo "release_version=$version" >> "$GITHUB_OUTPUT"
-          echo "release_base_url=$release_base_url" >> "$GITHUB_OUTPUT"
           echo "oss_prefix=$oss_prefix" >> "$GITHUB_OUTPUT"
 
   build-windows:
@@ -96,7 +75,11 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
       RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
-      RELEASE_BASE_URL: ${{ needs.prepare.outputs.release_base_url }}
+      GITEE_RELEASE_BASE_URL: ${{ secrets.GITEE_RELEASE_BASE_URL }}
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
+      OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL }}
+      OSS_PREFIX: ${{ secrets.OSS_PREFIX }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -123,6 +106,34 @@ jobs:
             Write-Host "app_config.json prepared from APP_CONFIG_JSON."
           } else {
             Write-Host "APP_CONFIG_JSON not set. Build will continue without injected runtime config."
+          }
+
+      - name: Resolve release base URL
+        shell: pwsh
+        run: |
+          $ossPrefix = if ($env:OSS_PREFIX) { $env:OSS_PREFIX } else { "ai-boss" }
+          $ossPrefix = $ossPrefix.Trim("/")
+
+          $ossPublicBaseUrl = $env:OSS_PUBLIC_BASE_URL.TrimEnd("/")
+          if (-not $ossPublicBaseUrl -and $env:OSS_BUCKET_NAME -and $env:OSS_ENDPOINT) {
+            $ossEndpoint = $env:OSS_ENDPOINT -replace '^https?://', ''
+            $ossEndpoint = $ossEndpoint.TrimEnd("/")
+            $ossPublicBaseUrl = "https://$($env:OSS_BUCKET_NAME).$ossEndpoint"
+            if ($ossPrefix) {
+              $ossPublicBaseUrl = "$ossPublicBaseUrl/$ossPrefix"
+            }
+          }
+
+          $releaseBaseUrl = $ossPublicBaseUrl
+          if (-not $releaseBaseUrl -and $env:GITEE_RELEASE_BASE_URL) {
+            $releaseBaseUrl = $env:GITEE_RELEASE_BASE_URL.TrimEnd("/")
+          }
+
+          "RELEASE_BASE_URL=$releaseBaseUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ($releaseBaseUrl) {
+            Write-Host "Resolved release base URL: $releaseBaseUrl"
+          } else {
+            Write-Host "No release base URL configured. Build will skip manifest generation."
           }
 
       - name: Build Windows installer
@@ -164,7 +175,11 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
       RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
-      RELEASE_BASE_URL: ${{ needs.prepare.outputs.release_base_url }}
+      GITEE_RELEASE_BASE_URL: ${{ secrets.GITEE_RELEASE_BASE_URL }}
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
+      OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL }}
+      OSS_PREFIX: ${{ secrets.OSS_PREFIX }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -187,6 +202,32 @@ jobs:
             echo "app_config.json prepared from APP_CONFIG_JSON."
           else
             echo "APP_CONFIG_JSON not set. Build will continue without injected runtime config."
+          fi
+
+      - name: Resolve release base URL
+        shell: bash
+        run: |
+          oss_prefix="${OSS_PREFIX:-ai-boss}"
+          oss_prefix="${oss_prefix#/}"
+          oss_prefix="${oss_prefix%/}"
+
+          oss_public_base_url="${OSS_PUBLIC_BASE_URL%/}"
+          if [ -z "$oss_public_base_url" ] && [ -n "${OSS_BUCKET_NAME:-}" ] && [ -n "${OSS_ENDPOINT:-}" ]; then
+            oss_endpoint="${OSS_ENDPOINT#http://}"
+            oss_endpoint="${oss_endpoint#https://}"
+            oss_endpoint="${oss_endpoint%/}"
+            oss_public_base_url="https://${OSS_BUCKET_NAME}.${oss_endpoint}"
+            if [ -n "$oss_prefix" ]; then
+              oss_public_base_url="${oss_public_base_url}/${oss_prefix}"
+            fi
+          fi
+
+          release_base_url="${oss_public_base_url:-${GITEE_RELEASE_BASE_URL%/}}"
+          echo "RELEASE_BASE_URL=$release_base_url" >> "$GITHUB_ENV"
+          if [ -n "$release_base_url" ]; then
+            echo "Resolved release base URL: $release_base_url"
+          else
+            echo "No release base URL configured. Build will skip manifest generation."
           fi
 
       - name: Build unsigned macOS bundle
@@ -220,7 +261,6 @@ jobs:
       - prepare
       - build-windows
       - build-macos
-    if: ${{ needs.prepare.outputs.release_base_url != '' }}
     runs-on: ubuntu-latest
     env:
       RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
@@ -228,6 +268,7 @@ jobs:
       OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
       OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+      OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL }}
       OSS_PREFIX: ${{ needs.prepare.outputs.oss_prefix }}
     steps:
       - name: Checkout source
@@ -235,20 +276,44 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.release_tag }}
 
+      - name: Resolve publish config
+        id: publish_meta
+        shell: bash
+        run: |
+          missing=()
+          for name in OSS_ENDPOINT OSS_BUCKET_NAME OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Missing OSS config: ${missing[*]}. Skip OSS publish."
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Resolved OSS publish target: ${OSS_PUBLIC_BASE_URL:-https://${OSS_BUCKET_NAME}.${OSS_ENDPOINT}}"
+
       - name: Setup Python
+        if: ${{ steps.publish_meta.outputs.skip != 'true' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install OSS SDK
+        if: ${{ steps.publish_meta.outputs.skip != 'true' }}
         run: python -m pip install --upgrade oss2
 
       - name: Download built artifacts
+        if: ${{ steps.publish_meta.outputs.skip != 'true' }}
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
 
       - name: Upload release to OSS
+        if: ${{ steps.publish_meta.outputs.skip != 'true' }}
         run: |
           python scripts/upload_release_to_oss.py \
             --source-dir release-artifacts \
