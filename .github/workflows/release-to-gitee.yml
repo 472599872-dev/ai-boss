@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: release-build-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
@@ -69,8 +69,29 @@ jobs:
           echo "release_version=$version" >> "$GITHUB_OUTPUT"
           echo "oss_prefix=$oss_prefix" >> "$GITHUB_OUTPUT"
 
-  build-windows:
+  ensure-release:
     needs: prepare
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+    steps:
+      - name: Ensure GitHub release exists
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_TAG" \
+              --notes ""
+          fi
+
+  build-windows:
+    needs:
+      - prepare
+      - ensure-release
     runs-on: windows-latest
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
@@ -146,19 +167,23 @@ jobs:
             pwsh -ExecutionPolicy Bypass -File ".\scripts\build_windows_installer.ps1" -SkipManifest
           }
 
-      - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-release-${{ env.RELEASE_VERSION }}
-          path: |
-            release/*.exe
-            release/*.zip
-            release/latest.json
-          if-no-files-found: error
-          compression-level: 0
+      - name: Upload Windows assets to GitHub Release
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem release -File | Where-Object {
+            $_.Name -match '\.(exe|zip)$' -or $_.Name -eq 'latest.json'
+          } | ForEach-Object { $_.FullName }
+          if (-not $files -or $files.Count -eq 0) {
+            throw "No Windows release files found."
+          }
+          gh release upload $env:RELEASE_TAG $files --repo $env:GITHUB_REPOSITORY --clobber
 
   build-macos:
-    needs: prepare
+    needs:
+      - prepare
+      - ensure-release
     strategy:
       fail-fast: false
       matrix:
@@ -245,18 +270,21 @@ jobs:
           fi
           ./scripts/build_macos_bundle.sh "${args[@]}"
 
-      - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-release-${{ matrix.python_arch }}-${{ env.RELEASE_VERSION }}
-          path: |
-            release/*.zip
-            release/*.dmg
-            release/latest-macos*.json
-          if-no-files-found: error
-          compression-level: 0
+      - name: Upload macOS assets to GitHub Release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=(release/*.zip release/*.dmg release/latest-macos*.json)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No macOS release files found." >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
   publish-oss:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     needs:
       - prepare
       - build-windows
