@@ -8503,6 +8503,7 @@ class BossWorkbench(QMainWindow):
         )
         self.pool_table.verticalHeader().setVisible(False)
         self.pool_table.setAlternatingRowColors(True)
+        self.pool_table.setWordWrap(False)
         self.pool_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.pool_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.pool_table.setMinimumHeight(430)
@@ -9523,7 +9524,8 @@ class BossWorkbench(QMainWindow):
                 self.pool_table.setItem(row_index, col, item)
             action_widget = QWidget()
             action_layout = QHBoxLayout(action_widget)
-            action_layout.setContentsMargins(0, 0, 0, 0)
+            action_layout.setContentsMargins(6, 4, 6, 4)
+            action_layout.setSpacing(6)
             chat = QPushButton("沟通")
             chat.setObjectName("RowAction")
             chat.clicked.connect(lambda checked=False, candidate_id=row["id"]: self.open_candidate_chat(candidate_id))
@@ -9550,8 +9552,19 @@ class BossWorkbench(QMainWindow):
             action_layout.addWidget(view_resume)
             action_layout.addWidget(resume)
             action_layout.addWidget(reject)
+            action_widget.setMinimumWidth(420)
+            self.pool_table.setRowHeight(row_index, 56)
             self.pool_table.setCellWidget(row_index, 8, action_widget)
         self.pool_table.resizeColumnsToContents()
+        self.pool_table.setColumnWidth(0, 120)
+        self.pool_table.setColumnWidth(1, 124)
+        self.pool_table.setColumnWidth(2, 72)
+        self.pool_table.setColumnWidth(3, 90)
+        self.pool_table.setColumnWidth(4, 88)
+        self.pool_table.setColumnWidth(5, 72)
+        self.pool_table.setColumnWidth(6, 72)
+        self.pool_table.setColumnWidth(7, 80)
+        self.pool_table.setColumnWidth(8, 440)
         self.refresh_metrics(rows)
 
     def on_pool_cell_clicked(self, row: int, col: int) -> None:
@@ -10113,21 +10126,145 @@ class BossWorkbench(QMainWindow):
 
     def show_candidate_dialog(self, row: dict[str, Any]) -> None:
         dialog = QDialog(self)
+        dialog.setObjectName("ScoreDetailDialog")
         dialog.setWindowTitle(f"{row['name']} · 评分详情")
-        dialog.resize(560, 420)
+        dialog.resize(760, 620)
         layout = QVBoxLayout(dialog)
-        title = QLabel(f"{row['name']} · {row['role']} · {row['score']} 分")
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+        title = QLabel(f"{row['name']} · {row['role']}")
         title.setObjectName("Title")
-        detail = QTextEdit()
-        detail.setReadOnly(True)
-        detail.setText(
-            f"状态：{self.status_label(row['status'])}\n来源：{row['source']} · 第 {row['list_index']} 位\n"
-            f"城市/年限：{row['city']} · {row['years']}\n在线简历：{row['resume_state']}\n\n"
-            f"命中项：{row['hits']}\n\n缺失项：{row['misses']}\n\n风险项：{row['risks']}\n\n建议话术：{row['suggestion']}"
+        subtitle = QLabel(f"{row['score']} 分 · {self.status_label(row['status'])}")
+        subtitle.setObjectName("Subtitle")
+        hero = QFrame()
+        hero.setObjectName("ScoreHero")
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(18, 16, 18, 16)
+        hero_layout.setSpacing(10)
+        hero_layout.addWidget(title)
+        hero_layout.addWidget(subtitle)
+        meta_wrap = QWidget()
+        meta_layout = QGridLayout(meta_wrap)
+        meta_layout.setContentsMargins(0, 0, 0, 0)
+        meta_layout.setHorizontalSpacing(10)
+        meta_layout.setVerticalSpacing(10)
+        meta_pairs = [
+            ("来源", f"{row['source']} · 第 {row['list_index']} 位"),
+            ("城市/年限", f"{row['city']} · {row['years']}"),
+            ("在线简历", str(row["resume_state"])),
+            ("当前状态", self.status_label(str(row["status"]))),
+        ]
+        for index, (label_text, value_text) in enumerate(meta_pairs):
+            badge = QLabel(f"{label_text} · {value_text}")
+            badge.setObjectName("ScoreMetaBadge")
+            badge.setWordWrap(True)
+            meta_layout.addWidget(badge, index // 2, index % 2)
+        hero_layout.addWidget(meta_wrap)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setObjectName("ScoreDetailScroll")
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+        content_layout.addWidget(
+            self.build_score_section(
+                "命中项",
+                self.parse_score_items(row.get("hits")),
+                "positive",
+                "当前没有明确命中项。",
+            )
         )
-        layout.addWidget(title)
-        layout.addWidget(detail)
+        content_layout.addWidget(
+            self.build_score_section(
+                "缺失项",
+                self.parse_score_items(row.get("misses")),
+                "negative",
+                "当前没有明显缺失项。",
+            )
+        )
+        content_layout.addWidget(
+            self.build_score_section(
+                "风险项",
+                self.parse_score_items(row.get("risks")),
+                "risk",
+                "当前没有明显风险项。",
+            )
+        )
+        content_layout.addWidget(
+            self.build_score_section(
+                "建议话术",
+                self.parse_score_items(row.get("suggestion")),
+                "advice",
+                "当前没有生成建议话术。",
+                columns=1,
+            )
+        )
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        layout.addWidget(hero)
+        layout.addWidget(scroll, 1)
         dialog.exec()
+
+    @staticmethod
+    def parse_score_items(value: Any) -> list[str]:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        normalized = re.sub(r"[•·●▪◦]+", "\n", text)
+        parts = [
+            segment.strip(" -\t\r\n")
+            for segment in re.split(r"[；;\n]+", normalized)
+            if segment.strip(" -\t\r\n")
+        ]
+        unique: list[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            if part in seen:
+                continue
+            seen.add(part)
+            unique.append(part)
+        return unique
+
+    def build_score_section(
+        self,
+        title: str,
+        items: list[str],
+        tone: str,
+        empty_text: str,
+        *,
+        columns: int = 2,
+    ) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("ScoreSection")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        heading = QLabel(title)
+        heading.setObjectName("ScoreSectionTitle")
+        layout.addWidget(heading)
+        grid_host = QWidget()
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        chips = items or [empty_text]
+        object_name = {
+            "positive": "ScoreChipPositive",
+            "negative": "ScoreChipNegative",
+            "risk": "ScoreChipRisk",
+            "advice": "ScoreChipAdvice",
+        }.get(tone, "ScoreChipNeutral")
+        effective_columns = max(1, columns)
+        for index, text in enumerate(chips):
+            chip = QLabel(text)
+            chip.setObjectName(object_name)
+            chip.setWordWrap(True)
+            chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            grid.addWidget(chip, index // effective_columns, index % effective_columns)
+        layout.addWidget(grid_host)
+        return frame
 
     def find_candidate_profile_record(self, row: dict[str, Any]) -> tuple[dict[str, Any] | None, Path | None]:
         job_id = int(row.get("job_id") or self.current_job_id)
@@ -10500,22 +10637,94 @@ class BossWorkbench(QMainWindow):
                 font-weight: 700;
             }
             QPushButton#RowAction {
-                min-height: 28px;
+                min-height: 32px;
+                min-width: 60px;
                 padding: 0 10px;
-                border-radius: 10px;
-                font-size: 12px;
+                border-radius: 11px;
+                font-size: 11px;
                 font-weight: 700;
                 background: #f7faf8;
+                border: 1px solid #d4dfda;
+                color: #28463d;
             }
             QPushButton#RowDanger {
-                min-height: 28px;
+                min-height: 32px;
+                min-width: 60px;
                 padding: 0 10px;
-                border-radius: 10px;
+                border-radius: 11px;
                 color: #a6291f;
                 background: #fff7f5;
                 border-color: #efc8c1;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QDialog#ScoreDetailDialog {
+                background: #f5f8f6;
+            }
+            QDialog#ScoreDetailDialog QScrollArea,
+            QDialog#ScoreDetailDialog QWidget {
+                background: transparent;
+            }
+            QFrame#ScoreHero {
+                border: 1px solid #d3dfd9;
+                border-radius: 22px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(255,255,255,0.98), stop:1 rgba(237,244,240,0.94));
+            }
+            QLabel#ScoreMetaBadge {
+                padding: 10px 12px;
+                border-radius: 13px;
+                background: rgba(255, 255, 255, 0.94);
+                border: 1px solid #d7e2dc;
+                color: #405651;
                 font-size: 12px;
                 font-weight: 700;
+            }
+            QFrame#ScoreSection {
+                border: 1px solid #d7e0db;
+                border-radius: 18px;
+                background: rgba(255, 255, 255, 0.96);
+            }
+            QLabel#ScoreSectionTitle {
+                color: #1c342c;
+                font-size: 14px;
+                font-weight: 900;
+            }
+            QLabel#ScoreChipPositive,
+            QLabel#ScoreChipNegative,
+            QLabel#ScoreChipRisk,
+            QLabel#ScoreChipAdvice,
+            QLabel#ScoreChipNeutral {
+                padding: 12px 14px;
+                border-radius: 15px;
+                border: 1px solid #d8e1dc;
+                font-size: 12px;
+                font-weight: 700;
+                line-height: 1.5;
+            }
+            QLabel#ScoreChipPositive {
+                background: #ecf8f2;
+                border-color: #bfdccf;
+                color: #165440;
+            }
+            QLabel#ScoreChipNegative {
+                background: #fff5ef;
+                border-color: #f0d0c4;
+                color: #93411f;
+            }
+            QLabel#ScoreChipRisk {
+                background: #fff7e8;
+                border-color: #ebd8a7;
+                color: #855f09;
+            }
+            QLabel#ScoreChipAdvice {
+                background: #eef4ff;
+                border-color: #cbdaf7;
+                color: #284a7a;
+            }
+            QLabel#ScoreChipNeutral {
+                background: #f5f8f6;
+                border-color: #d8e1dc;
+                color: #536760;
             }
             QCheckBox {
                 background: transparent;
