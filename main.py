@@ -1356,6 +1356,7 @@ def open_local_path(path: Path) -> None:
 
 
 def fetch_json(url: str, timeout: int = 15) -> tuple[dict[str, Any], str]:
+    ssl_context, _, _ = build_ssl_context_with_bundles()
     req = urllib.request.Request(
         url,
         headers={
@@ -1365,7 +1366,7 @@ def fetch_json(url: str, timeout: int = 15) -> tuple[dict[str, Any], str]:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as resp:
             body = resp.read().decode("utf-8", errors="ignore")
             final_url = resp.geturl()
     except Exception as exc:
@@ -1537,6 +1538,7 @@ def download_update_package(info: UpdateInfo, target_dir: Path) -> Path:
     os.close(fd)
     temp_path = Path(temp_name)
     try:
+        ssl_context, _, _ = build_ssl_context_with_bundles()
         req = urllib.request.Request(
             info.package_url,
             headers={"User-Agent": f"{APP_ID}/{APP_VERSION}"},
@@ -1545,7 +1547,7 @@ def download_update_package(info: UpdateInfo, target_dir: Path) -> Path:
         hasher = hashlib.sha256()
         total = 0
         try:
-            with urllib.request.urlopen(req) as resp, temp_path.open("wb") as handle:
+            with urllib.request.urlopen(req, context=ssl_context) as resp, temp_path.open("wb") as handle:
                 for chunk in iter(lambda: resp.read(1024 * 1024), b""):
                     if not chunk:
                         break
