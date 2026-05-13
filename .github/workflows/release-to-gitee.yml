@@ -25,6 +25,7 @@ jobs:
       release_tag: ${{ steps.meta.outputs.release_tag }}
       release_version: ${{ steps.meta.outputs.release_version }}
       release_base_url: ${{ steps.meta.outputs.release_base_url }}
+      oss_prefix: ${{ steps.meta.outputs.oss_prefix }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -38,6 +39,10 @@ jobs:
         env:
           INPUT_TAG_NAME: ${{ github.event.inputs.tag_name }}
           GITEE_RELEASE_BASE_URL: ${{ secrets.GITEE_RELEASE_BASE_URL }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
+          OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL }}
+          OSS_PREFIX: ${{ secrets.OSS_PREFIX }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             tag="${INPUT_TAG_NAME}"
@@ -61,14 +66,29 @@ jobs:
             exit 1
           fi
 
-          release_base_url="${GITEE_RELEASE_BASE_URL%/}"
+          oss_prefix="${OSS_PREFIX:-ai-boss}"
+          oss_prefix="${oss_prefix#/}"
+          oss_prefix="${oss_prefix%/}"
+          oss_public_base_url="${OSS_PUBLIC_BASE_URL%/}"
+          if [ -z "$oss_public_base_url" ] && [ -n "$OSS_BUCKET_NAME" ] && [ -n "$OSS_ENDPOINT" ]; then
+            oss_endpoint="${OSS_ENDPOINT#http://}"
+            oss_endpoint="${oss_endpoint#https://}"
+            oss_endpoint="${oss_endpoint%/}"
+            oss_public_base_url="https://${OSS_BUCKET_NAME}.${oss_endpoint}"
+            if [ -n "$oss_prefix" ]; then
+              oss_public_base_url="${oss_public_base_url}/${oss_prefix}"
+            fi
+          fi
+
+          release_base_url="${oss_public_base_url:-${GITEE_RELEASE_BASE_URL%/}}"
           if [ -z "$release_base_url" ]; then
-            echo "GITEE_RELEASE_BASE_URL is not set. Workflow will build packages only and skip update manifest generation."
+            echo "OSS_PUBLIC_BASE_URL/GITEE_RELEASE_BASE_URL is not set. Workflow will build packages only and skip update manifest generation."
           fi
 
           echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
           echo "release_version=$version" >> "$GITHUB_OUTPUT"
           echo "release_base_url=$release_base_url" >> "$GITHUB_OUTPUT"
+          echo "oss_prefix=$oss_prefix" >> "$GITHUB_OUTPUT"
 
   build-windows:
     needs: prepare
@@ -194,3 +214,42 @@ jobs:
             release/latest-macos*.json
           if-no-files-found: error
           compression-level: 0
+
+  publish-oss:
+    needs:
+      - prepare
+      - build-windows
+      - build-macos
+    if: ${{ needs.prepare.outputs.release_base_url != '' }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+      OSS_PREFIX: ${{ needs.prepare.outputs.oss_prefix }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_tag }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install OSS SDK
+        run: python -m pip install --upgrade oss2
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Upload release to OSS
+        run: |
+          python scripts/upload_release_to_oss.py \
+            --source-dir release-artifacts \
+            --version "$RELEASE_VERSION"

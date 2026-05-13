@@ -4,22 +4,24 @@
 
 1. Gitee 继续作为主代码仓库
 2. GitHub 只负责运行 GitHub Actions 打包 Windows / macOS
-3. GitHub Actions 在你提供静态下载域名时才生成更新清单
-4. 安装包和清单发布到你自己的静态下载地址
-5. 客户端只从你自己的更新地址拉取 `latest.json` / `latest-macos.json`
+3. GitHub Actions 生成更新清单
+4. 安装包和清单发布到阿里云 OSS
+5. 客户端从 OSS 拉取 `latest.json` / `latest-macos.json`
 
 重要限制：
 
 1. Gitee `raw` 地址会对程序化下载返回 `403`
 2. 当前仓库的 `link-wei.gitee.io` 不能作为默认可用前提
 3. Gitee 仓库单文件上限是 `100MB`，当前安装包超过这个限制，不能直接放进仓库分支
-4. 所以默认方案必须改为你自己的静态域名 / OSS / COS / CDN
+4. 所以默认方案改为阿里云 OSS / CDN
 
 ## 当前仓库配置
 
 1. Gitee 主仓库：`https://gitee.com/link-wei/ai-boss.git`
 2. GitHub 构建仓库：`https://github.com/MilkTeaCoder/ai-boss-workbench.git`
-3. 默认不再假设 Gitee 可以直接托管更新清单或安装包
+3. OSS Bucket：`mova-itai`
+4. OSS Prefix：`ai-boss`
+5. OSS 默认公网地址：`https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss`
 
 ## GitHub Actions 做什么
 
@@ -48,15 +50,20 @@
 2. 如果没配置，工作流也会继续构建，但默认关闭在线更新
 3. 新版本不会再默认指向 `link-wei.gitee.io`
 
-可选覆盖：
+OSS 配置：
 
-- `GITEE_RELEASE_BASE_URL`
+- `OSS_ENDPOINT`
+- `OSS_BUCKET_NAME`
+- `OSS_ACCESS_KEY_ID`
+- `OSS_ACCESS_KEY_SECRET`
+- `OSS_PREFIX`
+- `OSS_PUBLIC_BASE_URL`
 
-这个值现在没有仓库内默认值，必须由你显式提供，例如：
+默认会根据 `OSS_BUCKET_NAME`、`OSS_ENDPOINT` 和 `OSS_PREFIX` 推导公网下载地址：
 
-- `https://update.example.com/ai-boss`
+- `https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss`
 
-只有配置了这个值，GitHub Actions 和本地打包脚本才会生成 `latest.json` / `latest-macos.json`。
+如果以后接入 CDN 或自定义域名，只需要把 `OSS_PUBLIC_BASE_URL` 改成你的 CDN 地址。
 
 ## 发版方式
 
@@ -68,9 +75,8 @@
 4. 推送到 GitHub
 5. 推送同版本 tag 到两个远端
 6. GitHub Actions 自动打包
-7. 如果配置了静态下载域名，则同时生成更新清单
-8. 从 GitHub Actions 下载 artifacts
-9. 上传到你自己的静态下载地址
+7. 自动上传 artifacts 到 OSS
+8. 用户客户端从 OSS 检查和下载更新
 
 ```bash
 git push gitee main
@@ -104,9 +110,29 @@ macOS artifact 里会有：
 
 1. 当前安装包大于 `100MB`
 2. Gitee 仓库分支推送会被大小限制拒绝
-3. 即使只放清单，安装包下载地址仍然必须指向你自己的静态域名
+3. 即使只放清单，安装包下载地址仍然必须指向 OSS
 
 如果你只是想在 Gitee 仓库里保留版本信息，可以只提交文本说明或小型 JSON 清单，不要再把安装包推到仓库分支。
+
+## GitHub Secrets
+
+需要配置：
+
+```text
+OSS_ENDPOINT=oss-cn-shanghai.aliyuncs.com
+OSS_BUCKET_NAME=mova-itai
+OSS_ACCESS_KEY_ID=<RAM AccessKey ID>
+OSS_ACCESS_KEY_SECRET=<RAM AccessKey Secret>
+OSS_PREFIX=ai-boss
+```
+
+可选：
+
+```text
+OSS_PUBLIC_BASE_URL=https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss
+```
+
+如果不配置 `OSS_PUBLIC_BASE_URL`，工作流会自动推导默认 OSS 公网地址。
 
 ## 客户端配置
 
@@ -114,24 +140,11 @@ macOS artifact 里会有：
 
 ```json
 {
-  "windows_update_enabled": false,
-  "windows_update_manifest_url": "",
-  "windows_update_check_on_startup": false,
-  "macos_update_enabled": false,
-  "macos_update_manifest_url": "",
-  "macos_update_check_on_startup": false
-}
-```
-
-等你准备好自己的静态更新地址后，再改成：
-
-```json
-{
   "windows_update_enabled": true,
-  "windows_update_manifest_url": "https://update.example.com/ai-boss/latest.json",
+  "windows_update_manifest_url": "https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss/latest.json",
   "windows_update_check_on_startup": true,
   "macos_update_enabled": true,
-  "macos_update_manifest_url": "https://update.example.com/ai-boss/latest-macos.json",
+  "macos_update_manifest_url": "https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss/latest-macos.json",
   "macos_update_check_on_startup": true
 }
 ```

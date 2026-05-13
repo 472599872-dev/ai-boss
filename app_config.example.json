@@ -45,14 +45,14 @@
   "llm_bridge_auth_token": "",
   "dify_user_id": "boss-workbench",
   "boss_workbench_autoscan": false,
-  "windows_update_enabled": false,
-  "windows_update_manifest_url": "",
-  "windows_update_check_on_startup": false,
+  "windows_update_enabled": true,
+  "windows_update_manifest_url": "https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss/latest.json",
+  "windows_update_check_on_startup": true,
   "windows_update_channel": "stable",
   "windows_update_timeout_seconds": 15,
-  "macos_update_enabled": false,
-  "macos_update_manifest_url": "",
-  "macos_update_check_on_startup": false,
+  "macos_update_enabled": true,
+  "macos_update_manifest_url": "https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss/latest-macos.json",
+  "macos_update_check_on_startup": true,
   "macos_update_channel": "stable",
   "macos_update_timeout_seconds": 15,
   "_meta": {
@@ -60,7 +60,7 @@
     "notes": [
       "将本文件复制为 app_config.json 后再填写真实配置。",
       "app_config.json 仅用于本地运行或打包注入，不要提交到公开仓库。",
-      "默认关闭在线更新，只有在你已经准备好自己的静态更新地址后再开启。",
+      "在线更新默认指向阿里云 OSS 公网地址。",
       "更新地址请使用你自己的域名、对象存储或独立分发仓，不要填公开源码仓库地址。"
     ]
   }

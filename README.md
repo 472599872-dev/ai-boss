@@ -82,7 +82,7 @@ run_app.command
 
 1. 源码仓库设为 private
 2. CI 只负责打包产物
-3. 安装包和 `latest.json` 上传到你自己的域名 / OSS / CDN，或单独的公开分发仓
+3. 安装包和 `latest.json` 上传到阿里云 OSS / CDN，或你自己的静态下载域名
 4. 客户端只配置分发地址，不配置源码仓地址
 
 ## Windows 发布流程
@@ -126,7 +126,8 @@ python scripts/generate_windows_update_manifest.py \
 
 - 一个 GitHub 仓库镜像：`MilkTeaCoder/ai-boss-workbench`
 - 可选 GitHub secret：`APP_CONFIG_JSON`
-- 可选覆盖 secret：`GITEE_RELEASE_BASE_URL`，例如 `https://update.example.com/ai-boss`
+- OSS secrets：`OSS_ENDPOINT`、`OSS_BUCKET_NAME`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`
+- 可选 OSS secrets：`OSS_PREFIX`、`OSS_PUBLIC_BASE_URL`
 - 不要求 macOS 签名与公证 secrets，默认生成未签名包
 
 发版方式：
@@ -135,8 +136,8 @@ python scripts/generate_windows_update_manifest.py \
 2. 把同一提交同步到 GitHub 镜像仓
 3. 推送同版本标签到 GitHub
 4. GitHub Actions 自动打包并生成可下载 artifact
-5. 如果配置了 `GITEE_RELEASE_BASE_URL`，工作流会同时生成更新清单；否则只打包，不生成清单
-6. 把安装包和清单上传到你自己的静态下载地址
+5. 如果配置了 OSS secrets，工作流会生成更新清单并上传到 OSS
+6. 客户端从 OSS 拉取 `latest.json` / `latest-macos.json`
 
 常用命令：
 
