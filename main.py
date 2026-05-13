@@ -253,6 +253,86 @@ def safe_url_for_log(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
+def is_transient_http_error_message(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    transient_markers = (
+        "500",
+        "502",
+        "503",
+        "504",
+        "system error",
+        "timed out",
+        "timeout",
+        "temporar",
+        "connection reset",
+        "connection aborted",
+        "remote end closed",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def build_base_app_stylesheet() -> str:
+    return """
+        QWidget {
+            color: #17211f;
+            font-size: 14px;
+        }
+        QLabel {
+            background: transparent;
+        }
+        QDialog#FeishuLoginDialog {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f4f7f4, stop:1 #e8efeb);
+        }
+        QDialog#FeishuLoginDialog QLabel#SectionIntro {
+            color: #20332d;
+            font-size: 16px;
+            font-weight: 800;
+            line-height: 1.45;
+            padding-bottom: 4px;
+        }
+        QDialog#FeishuLoginDialog QLabel#Subtitle {
+            color: #60716c;
+            font-size: 13px;
+            font-weight: 600;
+            line-height: 1.5;
+        }
+        QDialog#FeishuLoginDialog QLabel#Log {
+            padding: 12px 14px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.9);
+            color: #52635e;
+            border: 1px solid #d8e2dd;
+        }
+        QDialog#FeishuLoginDialog QPushButton {
+            min-height: 40px;
+            border-radius: 14px;
+            padding: 0 16px;
+            border: 1px solid #d6e0db;
+            background: rgba(255, 255, 255, 0.92);
+            color: #17211f;
+            font-weight: 800;
+        }
+        QDialog#FeishuLoginDialog QPushButton:hover {
+            border-color: #a3b6b0;
+            background: white;
+        }
+        QDialog#FeishuLoginDialog QPushButton#PrimaryAction {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #117a59, stop:1 #0c5b44);
+            color: white;
+            border-color: #117a59;
+        }
+        QDialog#FeishuLoginDialog QPushButton#PrimaryAction:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #149268, stop:1 #0f6b50);
+            border-color: #149268;
+        }
+    """
+
+
 def split_update_manifest_urls(value: str) -> list[str]:
     seen: set[str] = set()
     urls: list[str] = []
@@ -518,6 +598,7 @@ FEISHU_LOGIN_TIMEOUT_SECONDS = 8
 FEISHU_LOGIN_STEP_TIMEOUT_SECONDS = 6
 FEISHU_BITABLE_TIMEOUT_SECONDS = 8
 FEISHU_CALLBACK_WAIT_TIMEOUT_SECONDS = 90
+FEISHU_USER_INFO_RETRY_DELAYS_SECONDS = (0.45, 1.0)
 
 
 @dataclass
@@ -2420,25 +2501,47 @@ class FeishuClient:
         url = self.setting("feishu_user_info_url")
         headers = {"Authorization": f"Bearer {access_token}"}
         errors: list[str] = []
-        for method in ("GET", "POST"):
-            attempt_started = time.perf_counter()
-            try:
-                data = self._request_json(url, method=method, headers=headers, timeout=FEISHU_LOGIN_STEP_TIMEOUT_SECONDS)
-                self._trace(
-                    "feishu_user_info_attempt_ok",
-                    {
+        is_authen_endpoint = "/authen/" in url.lower()
+        methods = ("GET",) if is_authen_endpoint else ("GET", "POST")
+        retry_delays = FEISHU_USER_INFO_RETRY_DELAYS_SECONDS if is_authen_endpoint else ()
+        for method in methods:
+            method_error = ""
+            attempt_count = 1 + len(retry_delays)
+            for retry_index in range(attempt_count):
+                attempt_started = time.perf_counter()
+                try:
+                    data = self._request_json(url, method=method, headers=headers, timeout=FEISHU_LOGIN_STEP_TIMEOUT_SECONDS)
+                    self._trace(
+                        "feishu_user_info_attempt_ok",
+                        {
+                            "method": method,
+                            "retry_index": retry_index,
+                            "elapsed_ms": int((time.perf_counter() - attempt_started) * 1000),
+                            "total_elapsed_ms": int((time.perf_counter() - started) * 1000),
+                        },
+                    )
+                    return data
+                except IntegrationError as exc:
+                    method_error = str(exc)
+                    retryable = retry_index < len(retry_delays) and is_transient_http_error_message(method_error)
+                    trace_payload = {
                         "method": method,
+                        "retry_index": retry_index,
                         "elapsed_ms": int((time.perf_counter() - attempt_started) * 1000),
-                        "total_elapsed_ms": int((time.perf_counter() - started) * 1000),
-                    },
-                )
-                return data
-            except IntegrationError as exc:
-                errors.append(str(exc))
-                self._trace(
-                    "feishu_user_info_attempt_error",
-                    {"method": method, "elapsed_ms": int((time.perf_counter() - attempt_started) * 1000), "error": str(exc)[:300]},
-                )
+                        "retryable": retryable,
+                        "error": method_error[:300],
+                    }
+                    if retryable:
+                        trace_payload["retry_in_ms"] = int(retry_delays[retry_index] * 1000)
+                    self._trace("feishu_user_info_attempt_error", trace_payload)
+                    if retryable:
+                        time.sleep(retry_delays[retry_index])
+                        continue
+                    break
+            if method_error:
+                errors.append(method_error)
+        if is_authen_endpoint and len(errors) == 1 and is_transient_http_error_message(errors[0]):
+            raise IntegrationError(f"飞书用户信息接口暂时不可用，请稍后重试。原始错误：{errors[0]}")
         raise IntegrationError("；".join(errors) or "获取飞书用户信息失败。")
 
     def app_access_token(self, timeout: int | None = None) -> str:
@@ -7585,16 +7688,19 @@ class FeishuLoginDialog(QDialog):
         self.login_trace_id = ""
         self.pending_state = ""
         self.oauth_shutdown_thread: threading.Thread | None = None
+        self.setObjectName("FeishuLoginDialog")
         self.setWindowTitle("飞书登录")
-        self.resize(420, 240)
+        self.resize(560, 320)
         self.build_ui()
         self.load_settings()
 
     def build_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
         intro = QLabel("打开应用前需要先通过飞书认证。只有已经登记在飞书人员额度表中的账号，才能登录成功。")
         intro.setWordWrap(True)
-        intro.setObjectName("Subtitle")
+        intro.setObjectName("SectionIntro")
         layout.addWidget(intro)
 
         self.note_label = QLabel("应用将使用预置的飞书配置自动打开认证页面。")
@@ -7608,7 +7714,9 @@ class FeishuLoginDialog(QDialog):
         layout.addWidget(self.status_label)
 
         button_row = QHBoxLayout()
+        button_row.setSpacing(12)
         self.login_button = QPushButton("飞书登录")
+        self.login_button.setObjectName("PrimaryAction")
         self.login_button.clicked.connect(self.start_login)
         self.cancel_button = QPushButton("退出应用")
         self.cancel_button.clicked.connect(self.reject)
@@ -10651,6 +10759,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    app.setStyleSheet(build_base_app_stylesheet())
     app_icon = load_app_icon()
     if app_icon:
         app.setWindowIcon(app_icon)
