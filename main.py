@@ -280,6 +280,29 @@ def format_update_request_error(url: str, exc: BaseException) -> str:
     return str(exc)
 
 
+def normalize_update_manifest_url_setting(platform: str, value: Any) -> tuple[str, str]:
+    default_url = DEFAULT_UPDATE_MANIFEST_URLS.get(platform, "").strip()
+    raw_text = str(value or "").strip()
+    candidates = split_update_manifest_urls(raw_text)
+    normalized: list[str] = []
+    filtered = False
+    for candidate in candidates:
+        if candidate in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS:
+            filtered = True
+            continue
+        normalized.append(candidate)
+    if not normalized:
+        if raw_text:
+            return default_url, "defaulted"
+        return default_url, "blank"
+    normalized_text = ";".join(normalized)
+    if filtered:
+        return normalized_text, "filtered"
+    if normalized_text != raw_text:
+        return normalized_text, "normalized"
+    return normalized_text, "unchanged"
+
+
 def write_feishu_login_log(event: str, payload: dict[str, Any] | None = None) -> None:
     LOG_DIR.mkdir(exist_ok=True)
     record = {
@@ -407,6 +430,7 @@ LEGACY_GITEE_PAGES_WINDOWS_UPDATE_MANIFEST_URL = (
 LEGACY_GITEE_PAGES_MACOS_UPDATE_MANIFEST_URL = (
     f"{LEGACY_GITEE_PAGES_UPDATE_BASE_URL}/latest-macos.json"
 )
+DEFAULT_UPDATE_BASE_URL = "https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss"
 BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS = {
     LEGACY_PUBLIC_WINDOWS_UPDATE_MANIFEST_URL,
     LEGACY_PUBLIC_MACOS_UPDATE_MANIFEST_URL,
@@ -415,8 +439,8 @@ BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS = {
     LEGACY_GITEE_PAGES_WINDOWS_UPDATE_MANIFEST_URL,
     LEGACY_GITEE_PAGES_MACOS_UPDATE_MANIFEST_URL,
 }
-DEFAULT_WINDOWS_UPDATE_MANIFEST_URL = ""
-DEFAULT_MACOS_UPDATE_MANIFEST_URL = ""
+DEFAULT_WINDOWS_UPDATE_MANIFEST_URL = f"{DEFAULT_UPDATE_BASE_URL}/latest.json"
+DEFAULT_MACOS_UPDATE_MANIFEST_URL = f"{DEFAULT_UPDATE_BASE_URL}/latest-macos.json"
 DEFAULT_UPDATE_MANIFEST_URLS = {
     "windows": DEFAULT_WINDOWS_UPDATE_MANIFEST_URL,
     "macos": DEFAULT_MACOS_UPDATE_MANIFEST_URL,
@@ -470,14 +494,14 @@ DEFAULT_APP_CONFIG = {
     "llm_bridge_auth_token": "",
     "dify_user_id": "boss-workbench",
     "boss_workbench_autoscan": False,
-    "windows_update_enabled": False,
+    "windows_update_enabled": True,
     "windows_update_manifest_url": DEFAULT_WINDOWS_UPDATE_MANIFEST_URL,
-    "windows_update_check_on_startup": False,
+    "windows_update_check_on_startup": True,
     "windows_update_channel": "stable",
     "windows_update_timeout_seconds": 15,
-    "macos_update_enabled": False,
+    "macos_update_enabled": True,
     "macos_update_manifest_url": DEFAULT_MACOS_UPDATE_MANIFEST_URL,
-    "macos_update_check_on_startup": False,
+    "macos_update_check_on_startup": True,
     "macos_update_channel": "stable",
     "macos_update_timeout_seconds": 15,
 }
@@ -1575,17 +1599,12 @@ def _normalize_app_config(payload: dict[str, Any] | None) -> dict[str, Any]:
         manifest_key = f"{platform}_update_manifest_url"
         enabled_key = f"{platform}_update_enabled"
         startup_key = f"{platform}_update_check_on_startup"
-        manifest_url = str(config.get(manifest_key) or "").strip()
-        if manifest_url in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS:
-            config[manifest_key] = DEFAULT_UPDATE_MANIFEST_URLS[platform]
-            config[enabled_key] = False
-            config[startup_key] = False
-        elif not manifest_url:
-            config[manifest_key] = DEFAULT_UPDATE_MANIFEST_URLS[platform]
-            config[enabled_key] = False
-            config[startup_key] = False
-        else:
-            config[manifest_key] = manifest_url
+        manifest_url, manifest_state = normalize_update_manifest_url_setting(platform, config.get(manifest_key))
+        config[manifest_key] = manifest_url
+        if manifest_state in {"blank", "defaulted"}:
+            has_default_manifest = bool(manifest_url)
+            config[enabled_key] = has_default_manifest
+            config[startup_key] = has_default_manifest
     return config
 
 
@@ -8760,9 +8779,9 @@ class BossWorkbench(QMainWindow):
         windows_manifest_url = self.windows_update_manifest_url_input.text().strip()
         macos_manifest_url = self.macos_update_manifest_url_input.text().strip()
         blocked_platforms: list[str] = []
-        if windows_manifest_url in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS:
+        if any(url in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS for url in split_update_manifest_urls(windows_manifest_url)):
             blocked_platforms.append("Windows")
-        if macos_manifest_url in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS:
+        if any(url in BLOCKED_PUBLIC_UPDATE_MANIFEST_URLS for url in split_update_manifest_urls(macos_manifest_url)):
             blocked_platforms.append("macOS")
         if blocked_platforms:
             joined = "、".join(blocked_platforms)
