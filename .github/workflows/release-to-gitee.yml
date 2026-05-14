@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish_oss_only:
+        description: "是否只把现有 Release 资产同步到 OSS，不重新构建"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -94,6 +99,7 @@ jobs:
           fi
 
   build-windows:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.publish_oss_only == 'true') }}
     needs:
       - prepare
       - ensure-release
@@ -186,6 +192,7 @@ jobs:
           gh release upload $env:RELEASE_TAG $files --repo $env:GITHUB_REPOSITORY --clobber
 
   build-macos:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.publish_oss_only == 'true') }}
     needs:
       - prepare
       - ensure-release
@@ -289,9 +296,19 @@ jobs:
           gh release upload "$RELEASE_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
   publish-oss:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.publish_oss == 'true' }}
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'workflow_dispatch' &&
+        github.event.inputs.publish_oss == 'true' &&
+        needs.prepare.result == 'success' &&
+        needs.ensure-release.result == 'success' &&
+        (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
+        (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
+      }}
     needs:
       - prepare
+      - ensure-release
       - build-windows
       - build-macos
     runs-on: ubuntu-latest
