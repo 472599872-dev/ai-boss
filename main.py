@@ -8763,6 +8763,8 @@ class BossWorkbench(QMainWindow):
         usage_actions.addWidget(refresh_usage_button)
         usage_actions.addWidget(sync_usage_button)
         usage_layout.addLayout(usage_actions)
+        # 保留 token 统计控件与逻辑，但不在“当前账号”页展示该分区。
+        usage_box.setVisible(False)
         layout.addWidget(usage_box)
 
         version_box = QGroupBox("版本与更新")
