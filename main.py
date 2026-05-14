@@ -8760,6 +8760,8 @@ class BossWorkbench(QMainWindow):
         save_update_button.setObjectName("PrimaryAction")
         save_update_button.clicked.connect(self.save_feishu_settings)
         update_settings_layout.addWidget(save_update_button)
+        # 保留更新配置控件，继续支持配置读写与更新逻辑，但不在“当前账号”页展示。
+        update_settings_box.setVisible(False)
         layout.addWidget(update_settings_box)
         layout.addStretch()
         return page
