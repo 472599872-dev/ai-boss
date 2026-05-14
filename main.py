@@ -8106,6 +8106,7 @@ class BossWorkbench(QMainWindow):
         self.scan_stop_buttons: list[QPushButton] = []
         self.eval_score_labels: list[QLabel] = []
         self.eval_text_edits: list[QTextEdit] = []
+        self.pool_order = "recent"
         self.update_bridge = UpdateBridge(self)
         self.update_bridge.check_finished.connect(self.on_update_check_finished)
         self.update_bridge.download_finished.connect(self.on_update_download_finished)
@@ -9647,8 +9648,12 @@ class BossWorkbench(QMainWindow):
         self.write_scan_log("search_scroll", {**payload, "attempt": self.scan.search_scroll_attempts, "target": self.search_limit.value(), "scrollCount": self.scan.search_scroll_attempts, "maxScrolls": 60})
         QTimer.singleShot(700, self.prepare_search_scan)
 
-    def refresh_pool(self, order: str = "recent") -> None:
-        rows = self.repo.candidates(self.current_job_id, order)
+    def refresh_pool(self, order: str | None = None) -> None:
+        resolved_order = str(order or self.pool_order or "recent").strip().lower()
+        if resolved_order not in {"recent", "score"}:
+            resolved_order = "recent"
+        self.pool_order = resolved_order
+        rows = self.repo.candidates(self.current_job_id, resolved_order)
         self.pool_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             values: list[Any] = [
