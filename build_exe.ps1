@@ -1,7 +1,7 @@
 # ============================================================
-# AI招聘工作台 - Windows 一键打包脚本
+# TANLU  AI 招聘助理 - Windows 一键打包脚本
 # 用法: 在项目根目录执行 powershell -ExecutionPolicy Bypass -File build_exe.ps1
-# 产出: dist\AI招聘工作台\ 文件夹（可直接拷贝到其他电脑运行）
+# 产出: dist\TANLU  AI 招聘助理\ 文件夹（可直接拷贝到其他电脑运行）
 # ============================================================
 
 $ErrorActionPreference = "Stop"
@@ -10,7 +10,7 @@ Set-Location $PSScriptRoot
 $version = (Get-Content "app_version.txt" -Raw).Trim()
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  AI招聘工作台 打包工具 v$version" -ForegroundColor Cyan
+Write-Host "  TANLU  AI 招聘助理 打包工具 v$version" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -58,7 +58,7 @@ $batLines -join "`r`n" | Set-Content -Path (Join-Path $distDir "启动工作台.
 # 生成 ZIP 便于分发
 Write-Host "  生成便携 ZIP..." -ForegroundColor Gray
 if (-not (Test-Path "release")) { New-Item -ItemType Directory -Path "release" | Out-Null }
-$zipName = "AI招聘工作台-v$version-portable.zip"
+$zipName = "TANLU  AI 招聘助理-v$version-portable.zip"
 $zipPath = Join-Path $PSScriptRoot "release\$zipName"
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path (Join-Path $distDir "*") -DestinationPath $zipPath -Force

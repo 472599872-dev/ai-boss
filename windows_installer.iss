@@ -2,10 +2,10 @@
 ; Output: Windows installer (.exe)
 ; 注意: 安装目录使用英文路径以避免 QtWebEngine 中文路径崩溃
 
-#define MyAppName "AI招聘工作台"
+#define MyAppName "TANLU  AI 招聘助理"
 #define MyAppExeName "AIBossWorkbench.exe"
 #define MyAppDirName "AIBossWorkbench"
-#define MyAppPublisher "AI招聘工作台"
+#define MyAppPublisher "TANLU  AI 招聘助理"
 #define VersionFileHandle FileOpen("app_version.txt")
 #if VersionFileHandle
   #define MyAppVersion Trim(FileRead(VersionFileHandle))

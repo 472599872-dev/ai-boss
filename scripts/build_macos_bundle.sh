@@ -170,7 +170,7 @@ if [[ "$NOTARY_ANY_SET" == "1" ]]; then
 fi
 
 step "生成 DMG"
-hdiutil create -volname "AI招聘工作台" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH" >/dev/null
+hdiutil create -volname "TANLU  AI 招聘助理" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH" >/dev/null
 
 if [[ -n "$CODESIGN_IDENTITY" ]]; then
   step "代码签名 DMG"

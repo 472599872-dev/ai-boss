@@ -73,7 +73,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 
 
 APP_ID = "AIBossWorkbench"
-APP_NAME = "AI 招聘工作台"
+APP_NAME = "TANLU  AI 招聘助理"
 VERSION_FILE_NAME = "app_version.txt"
 APP_ICON_PREVIEW_PATH = "assets/app-icon/app-icon-v1-preview.png"
 
@@ -8171,7 +8171,7 @@ class BossWorkbench(QMainWindow):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(14)
 
-        title = QLabel("AI 招聘工作台")
+        title = QLabel("TANLU  AI 招聘助理")
         title.setObjectName("Title")
         self.top_subtitle = QLabel("本地桌面客户端 · 关键动作可控")
         self.top_subtitle.setObjectName("Subtitle")

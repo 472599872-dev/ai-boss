@@ -51,7 +51,7 @@ git push origin v1.0.1
 `build_windows.bat`
 
 产物：
-- `dist\AI招聘工作台\`（可直接运行）
+- `dist\TANLU  AI 招聘助理\`（可直接运行）
 - `release\AIBossWorkbench-Windows-v版本号.zip`（可分发）
 - 如果本机已安装 Inno Setup 6，还会自动生成安装器
 

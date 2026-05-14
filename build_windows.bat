@@ -30,7 +30,7 @@ if errorlevel 1 goto :err
 echo [3/6] Clean old build...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
-del /q "AI招聘工作台.spec" 2>nul
+del /q "TANLU  AI 招聘助理.spec" 2>nul
 del /q "AIBossWorkbench.spec" 2>nul
 
 echo [4/6] Build exe/app folder...
