@@ -1,0 +1,86 @@
+name: Publish Existing Release To OSS
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "要同步到 OSS 的版本标签，例如 v1.1.1"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish-oss:
+    runs-on: ubuntu-latest
+    env:
+      INPUT_TAG_NAME: ${{ github.event.inputs.tag_name }}
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+      OSS_PREFIX: ${{ secrets.OSS_PREFIX }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Validate release tag
+        id: meta
+        shell: bash
+        run: |
+          tag="${INPUT_TAG_NAME}"
+          if [[ ! "$tag" =~ ^v.+$ ]]; then
+            echo "Release tag must start with v, current: $tag" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          oss_prefix="${OSS_PREFIX:-ai-boss}"
+          oss_prefix="${oss_prefix#/}"
+          oss_prefix="${oss_prefix%/}"
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_version=$version" >> "$GITHUB_OUTPUT"
+          echo "oss_prefix=$oss_prefix" >> "$GITHUB_OUTPUT"
+
+      - name: Check OSS credentials
+        shell: bash
+        run: |
+          missing=()
+          for name in OSS_ENDPOINT OSS_BUCKET_NAME OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "Missing OSS config: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install OSS SDK
+        run: python -m pip install --upgrade oss2
+
+      - name: Download release assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-artifacts
+          gh release download "${{ steps.meta.outputs.release_tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-artifacts \
+            -p 'AIBossWorkbench-*' \
+            -p 'latest*.json'
+
+      - name: Upload release to OSS
+        env:
+          OSS_PREFIX: ${{ steps.meta.outputs.oss_prefix }}
+        run: |
+          python scripts/upload_release_to_oss.py \
+            --source-dir release-artifacts \
+            --version "${{ steps.meta.outputs.release_version }}"
