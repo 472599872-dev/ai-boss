@@ -1058,6 +1058,15 @@ class Repository:
         )
         self.conn.commit()
 
+    def has_action_log(self, job_id: int | None, candidate_name: str | None, action: str) -> bool:
+        if job_id is None or not candidate_name:
+            return False
+        row = self.conn.execute(
+            "select 1 from action_logs where job_id=? and candidate_name=? and action=? limit 1",
+            (job_id, candidate_name, action),
+        ).fetchone()
+        return row is not None
+
     def setting(self, key: str, default: str = "") -> str:
         row = self.conn.execute("select value from app_settings where key=?", (key,)).fetchone()
         if not row:
@@ -5305,6 +5314,15 @@ class ScanController:
               if (found >= 0) {
                 target = cards[found];
                 resolvedIndex = found;
+              } else {
+                return {
+                  ok: false,
+                  reason: 'expected-search-card-not-found',
+                  expectedDataId,
+                  targetIndex: targetIndex + 1,
+                  listCount: cards.length,
+                  url: doc.location ? doc.location.href : location.href
+                };
               }
             }
             if (!target) {
@@ -8474,7 +8492,7 @@ class BossWorkbench(QMainWindow):
     def build_pool(self) -> QWidget:
         page = QWidget()
         page.setObjectName("PagePanel")
-        page.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        page.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
@@ -8500,11 +8518,12 @@ class BossWorkbench(QMainWindow):
         layout.addWidget(tools_frame)
         table_frame = QFrame()
         table_frame.setObjectName("Card")
-        table_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        table_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         table_layout = QVBoxLayout(table_frame)
         table_layout.setContentsMargins(14, 14, 14, 14)
         table_layout.setSpacing(0)
         self.pool_table = QTableWidget(0, 9)
+        self.pool_table.setObjectName("PoolTable")
         self.pool_table.setHorizontalHeaderLabels(
             ["姓名", "方向", "分数", "状态", "来源", "第几位", "已读", "简历", "动作"]
         )
@@ -8513,12 +8532,11 @@ class BossWorkbench(QMainWindow):
         self.pool_table.setWordWrap(False)
         self.pool_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.pool_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.pool_table.setMinimumHeight(430)
-        self.pool_table.setMaximumHeight(430)
+        self.pool_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.pool_table.setMinimumHeight(0)
         self.pool_table.cellClicked.connect(self.on_pool_cell_clicked)
-        table_layout.addWidget(self.pool_table)
-        layout.addWidget(table_frame)
-        layout.addStretch()
+        table_layout.addWidget(self.pool_table, 1)
+        layout.addWidget(table_frame, 1)
         return page
 
     def build_job_config(self) -> QWidget:
@@ -9633,6 +9651,15 @@ class BossWorkbench(QMainWindow):
     def status_label(self, status: str) -> str:
         return STATUS_LABELS.get(status, status or "未知")
 
+    def pool_candidate_has_verified_chat(self, row: dict[str, Any]) -> bool:
+        source = str(row.get("source") or "")
+        if source == "投递人选":
+            return True
+        if source not in {"主动触达", "搜索找人"}:
+            return bool(str(row.get("boss_friend_id") or "").strip())
+        candidate_name = str(row.get("name") or "").strip()
+        return self.repo.has_action_log(self.current_job_id, candidate_name, "auto_hello_verified")
+
     def refresh_metrics(self, rows: list[sqlite3.Row]) -> None:
         counts = {"待评估": 0, "可沟通": 0, "已索简历": 0, "已淘汰": 0}
         for row in rows:
@@ -9698,11 +9725,9 @@ class BossWorkbench(QMainWindow):
             return
         data = dict(row)
         source = str(data.get("source") or "")
-        friend_id = str(data.get("boss_friend_id") or "").strip()
-        if source in {"主动触达", "搜索找人"} and not friend_id:
-            page_label = "推荐牛人页" if source == "主动触达" else "搜索页"
-            self.append_log(f"准备先回到 {page_label} 精确定位 {data['name']}，避免在当前沟通列表中串位。")
-            self.open_pool_candidate_on_source_page(data, "open_chat")
+        if source in {"主动触达", "搜索找人"} and not self.pool_candidate_has_verified_chat(data):
+            self.append_log(f"{data['name']} 没有已确认的沟通入口，已阻止从候选人池打开聊天。")
+            QMessageBox.information(self, "无法找到对应沟通", "该人员没有主动打过招呼，无法找到对应沟通")
             return
         self.append_log(f"准备在 BOSS 中打开 {data['name']} 的沟通窗口。")
         if not self.is_chat_index_page_url(self.browser.url().toString()):
@@ -9806,12 +9831,14 @@ class BossWorkbench(QMainWindow):
                 self.append_log(f"已在搜索页打开 {row['name']} 的在线简历源页面（列表第 {resolved_index} 位）。")
             return
         reason = payload.get("reason") or payload.get("error") or "未知错误"
+        if reason in {"expected-search-card-not-found", "search-card-not-found"}:
+            reason = "页面刷新后就找不到没有沟通过的人选了"
         if action == "open_chat":
             self.append_log(f"在搜索页定位 {row['name']} 失败：{reason}。")
             QMessageBox.warning(self, "打开候选人失败", f"没有成功在搜索页定位 {row['name']}：{reason}")
             return
         self.append_log(f"在搜索页打开 {row['name']} 的在线简历失败：{reason}。")
-        QMessageBox.warning(self, "打开源简历失败", f"没有成功在搜索页打开 {row['name']} 的在线简历：{reason}")
+        QMessageBox.warning(self, "打开源简历失败", f"没有成功在搜索中打开 {row['name']} 的在线简历：{reason}")
 
     def run_pool_chat_open(self, row: dict[str, Any], action: str = "open") -> None:
         script = self.pool_open_candidate_script(row)
@@ -9834,12 +9861,6 @@ class BossWorkbench(QMainWindow):
                 QTimer.singleShot(700, lambda row=row: self.open_source_resume_after_chat(row))
             return
         reason = payload.get("reason") or payload.get("error") or "未知错误"
-        source = str(row.get("source") or "")
-        if action == "open" and source in {"主动触达", "搜索找人"}:
-            page_label = "推荐牛人页" if source == "主动触达" else "搜索页"
-            self.append_log(f"当前沟通列表没有精确匹配到 {row['name']}，正在回到 {page_label} 重新定位，避免串位。")
-            self.open_pool_candidate_on_source_page(row, "open_chat")
-            return
         self.append_log(f"没有打开 {row['name']} 的沟通窗口：{reason}。")
         QMessageBox.warning(
             self,
