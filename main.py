@@ -5180,6 +5180,38 @@ class ScanController:
             const doc = searchDoc();
             if (!doc) return { ok: false, reason: 'search-frame-not-ready', url: location.href };
             const cards = cardsOf(doc);
+            const ensureSearchCache = () => {
+              const win = doc.defaultView;
+              if (!win) return {};
+              win.__bossWorkbenchSearchCache = win.__bossWorkbenchSearchCache || {};
+              if (!win.__bossWorkbenchSearchCacheGuardInstalled) {
+                const clear = () => { win.__bossWorkbenchSearchCache = {}; };
+                try {
+                  const history = win.history;
+                  const pushState = history && history.pushState;
+                  const replaceState = history && history.replaceState;
+                  if (typeof pushState === 'function') {
+                    history.pushState = function(...args) {
+                      const result = pushState.apply(this, args);
+                      clear();
+                      return result;
+                    };
+                  }
+                  if (typeof replaceState === 'function') {
+                    history.replaceState = function(...args) {
+                      const result = replaceState.apply(this, args);
+                      clear();
+                      return result;
+                    };
+                  }
+                  win.addEventListener('popstate', clear, true);
+                  win.addEventListener('hashchange', clear, true);
+                  win.addEventListener('beforeunload', clear, true);
+                } catch (_) {}
+                win.__bossWorkbenchSearchCacheGuardInstalled = true;
+              }
+              return win.__bossWorkbenchSearchCache;
+            };
             const target = cards[targetIndex];
             const describe = (card, i) => {
               const geek = geekFromCard(card);
@@ -5210,8 +5242,8 @@ class ScanController:
             const geek = geekFromCard(target);
             const dataId = String(geek.encryptGeekId || geek.encGeekId || geek.uniqueId || '');
             if (dataId && doc.defaultView) {
-              doc.defaultView.__bossWorkbenchSearchCache = doc.defaultView.__bossWorkbenchSearchCache || {};
-              doc.defaultView.__bossWorkbenchSearchCache[dataId] = {
+              const cache = ensureSearchCache();
+              cache[dataId] = {
                 geek,
                 cardText: clean(target.innerText || target.textContent || '')
               };
@@ -5243,14 +5275,16 @@ class ScanController:
         """
         return script.replace("__TARGET_INDEX__", str(target_index))
 
-    def open_search_candidate_script(self, index: int, expected_data_id: str) -> str:
+    def open_search_candidate_script(self, index: int, expected_data_id: str, require_live_cache: bool = False) -> str:
         target_index = max(0, index - 1)
         expected = json.dumps(expected_data_id)
+        require_cache = "true" if require_live_cache else "false"
         script = """
         (() => {
           try {
             const targetIndex = __TARGET_INDEX__;
             const expectedDataId = __EXPECTED_DATA_ID__;
+            const requireLiveCache = __REQUIRE_LIVE_CACHE__;
             const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
             const visible = (el) => {
               const rect = el.getBoundingClientRect();
@@ -5304,6 +5338,50 @@ class ScanController:
             const doc = searchDoc();
             if (!doc) return { ok: false, reason: 'search-frame-not-ready', url: location.href };
             const cards = cardsOf(doc);
+            const ensureSearchCache = () => {
+              const win = doc.defaultView;
+              if (!win) return {};
+              win.__bossWorkbenchSearchCache = win.__bossWorkbenchSearchCache || {};
+              if (!win.__bossWorkbenchSearchCacheGuardInstalled) {
+                const clear = () => { win.__bossWorkbenchSearchCache = {}; };
+                try {
+                  const history = win.history;
+                  const pushState = history && history.pushState;
+                  const replaceState = history && history.replaceState;
+                  if (typeof pushState === 'function') {
+                    history.pushState = function(...args) {
+                      const result = pushState.apply(this, args);
+                      clear();
+                      return result;
+                    };
+                  }
+                  if (typeof replaceState === 'function') {
+                    history.replaceState = function(...args) {
+                      const result = replaceState.apply(this, args);
+                      clear();
+                      return result;
+                    };
+                  }
+                  win.addEventListener('popstate', clear, true);
+                  win.addEventListener('hashchange', clear, true);
+                  win.addEventListener('beforeunload', clear, true);
+                } catch (_) {}
+                win.__bossWorkbenchSearchCacheGuardInstalled = true;
+              }
+              return win.__bossWorkbenchSearchCache;
+            };
+            const cache = ensureSearchCache();
+            const liveCache = expectedDataId ? cache[expectedDataId] : null;
+            if (requireLiveCache && (!expectedDataId || !liveCache)) {
+              return {
+                ok: false,
+                reason: 'search-live-cache-missing',
+                expectedDataId,
+                targetIndex: targetIndex + 1,
+                listCount: cards.length,
+                url: doc.location ? doc.location.href : location.href
+              };
+            }
             let target = cards[targetIndex];
             let resolvedIndex = targetIndex;
             if (expectedDataId) {
@@ -5332,8 +5410,7 @@ class ScanController:
             const geek = geekFromCard(target);
             const dataId = String(geek.encryptGeekId || geek.encGeekId || geek.uniqueId || '');
             if (dataId && doc.defaultView) {
-              doc.defaultView.__bossWorkbenchSearchCache = doc.defaultView.__bossWorkbenchSearchCache || {};
-              doc.defaultView.__bossWorkbenchSearchCache[dataId] = {
+              cache[dataId] = {
                 geek,
                 cardText: clean(target.innerText || target.textContent || '')
               };
@@ -5390,7 +5467,11 @@ class ScanController:
           }
         })();
         """
-        return script.replace("__TARGET_INDEX__", str(target_index)).replace("__EXPECTED_DATA_ID__", expected)
+        return (
+            script.replace("__TARGET_INDEX__", str(target_index))
+            .replace("__EXPECTED_DATA_ID__", expected)
+            .replace("__REQUIRE_LIVE_CACHE__", require_cache)
+        )
 
     def extract_search_detail_script(self, index: int, expected_data_id: str) -> str:
         target_index = max(0, index - 1)
@@ -9816,7 +9897,7 @@ class BossWorkbench(QMainWindow):
         list_index = int(row.get("list_index") or 1)
         data_id = str(row.get("boss_data_id") or "")
         self.browser.page().runJavaScript(
-            self.scan.json_script(self.scan.open_search_candidate_script(list_index, data_id)),
+            self.scan.json_script(self.scan.open_search_candidate_script(list_index, data_id, require_live_cache=True)),
             lambda result, row=row, action=action: self.on_pool_search_opened(row, result, action),
         )
 
@@ -9831,7 +9912,12 @@ class BossWorkbench(QMainWindow):
                 self.append_log(f"已在搜索页打开 {row['name']} 的在线简历源页面（列表第 {resolved_index} 位）。")
             return
         reason = payload.get("reason") or payload.get("error") or "未知错误"
-        if reason in {"expected-search-card-not-found", "search-card-not-found"}:
+        if reason in {
+            "expected-search-card-not-found",
+            "search-card-not-found",
+            "search-live-cache-missing",
+            "search-frame-not-ready",
+        }:
             reason = "页面刷新后就找不到没有沟通过的人选了"
         if action == "open_chat":
             self.append_log(f"在搜索页定位 {row['name']} 失败：{reason}。")
