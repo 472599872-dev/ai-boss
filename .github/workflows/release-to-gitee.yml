@@ -10,6 +10,11 @@ on:
         description: "要构建的版本标签，例如 v1.0.18"
         required: true
         type: string
+      publish_oss:
+        description: "是否同步发布到 OSS"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -284,7 +289,7 @@ jobs:
           gh release upload "$RELEASE_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
   publish-oss:
-    if: ${{ true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.publish_oss == 'true' }}
     needs:
       - prepare
       - build-windows

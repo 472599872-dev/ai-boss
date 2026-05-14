@@ -3868,6 +3868,13 @@ class ScanController:
             f"第 {self.current}/{len(self.queue)} 位 · 定位候选人",
             len(self.queue),
         )
+        if self.mode == "outbound":
+            self.app.ensure_recommend_page(
+                lambda index=index: self._locate_recommend_candidate(index),
+                on_failed=self.on_recommend_page_guard_failed,
+                reason=f"定位第 {index} 位候选人前",
+            )
+            return
         if self.mode == "search":
             self.app.ensure_search_page(
                 lambda index=index: self._locate_search_candidate(index),
@@ -3876,22 +3883,22 @@ class ScanController:
             )
             return
         self.app.append_log(f"正在从 BOSS 页面定位第 {index} 位候选人。")
-        if self.mode == "outbound":
-            self.app.browser.page().runJavaScript(
-                self.json_script(self.locate_recommend_candidate_script(index)),
-                self.on_candidate_located,
-            )
-            return
-        if self.mode == "search":
-            self.app.browser.page().runJavaScript(
-                self.json_script(self.locate_search_candidate_script(index)),
-                self.on_candidate_located,
-            )
-            return
         self.app.browser.page().runJavaScript(
             self.json_script(self.locate_candidate_script(index, self.read_filter)),
             self.on_candidate_located,
         )
+
+    def _locate_recommend_candidate(self, index: int) -> None:
+        self.app.append_log(f"正在从 BOSS 页面定位第 {index} 位候选人。")
+        self.app.browser.page().runJavaScript(
+            self.json_script(self.locate_recommend_candidate_script(index)),
+            self.on_candidate_located,
+        )
+
+    def on_recommend_page_guard_failed(self) -> None:
+        self.failed += 1
+        self.app.append_log(f"第 {self.pending_index} 位读取失败：无法自动回到 BOSS 推荐牛人页。")
+        self.after_current_item()
 
     def _locate_search_candidate(self, index: int) -> None:
         self.app.append_log(f"正在从 BOSS 页面定位第 {index} 位候选人。")
@@ -9368,16 +9375,20 @@ class BossWorkbench(QMainWindow):
     def start_outbound(self) -> None:
         if not self.ensure_feishu_session():
             return
-        current_url = self.browser.url().toString()
-        should_navigate = "zhipin.com/web/chat/recommend" not in current_url
-        if should_navigate:
-            self.navigate_boss("https://www.zhipin.com/web/chat/recommend")
         auto_text = "开启" if self.auto_hello.isChecked() else "关闭"
         self.append_log(f"准备读取 BOSS 推荐牛人列表。自动打招呼：{auto_text}，阈值 {self.score_threshold.value()}。")
-        delay = 2600 if should_navigate else 500
-        QTimer.singleShot(delay, self.prepare_outbound_scan)
+        self.ensure_recommend_page(
+            self.prepare_outbound_scan,
+            reason="开始推荐扫描前",
+        )
 
     def prepare_outbound_scan(self, attempt: int = 1) -> None:
+        if not self.is_recommend_page_url(self.browser.url().toString()):
+            self.ensure_recommend_page(
+                lambda attempt=attempt: self.prepare_outbound_scan(attempt),
+                reason=f"读取推荐列表前（第 {attempt} 次）",
+            )
+            return
         self.browser.page().runJavaScript(
             self.scan.json_script(self.scan.recommend_candidate_count_script()),
             lambda result, attempt=attempt: self.on_outbound_counted(result, attempt),
@@ -9453,9 +9464,48 @@ class BossWorkbench(QMainWindow):
         self.scan.start("search", list(range(1, limit + 1)))
 
     @staticmethod
+    def is_recommend_page_url(url: str) -> bool:
+        current = str(url or "").strip().lower()
+        return ("zhipin.com/web/chat/recommend" in current) or ("zhipin.com/web/frame/recommend" in current)
+
+    @staticmethod
     def is_search_page_url(url: str) -> bool:
         current = str(url or "").strip().lower()
         return ("zhipin.com/web/chat/search" in current) or ("zhipin.com/web/frame/search" in current)
+
+    def is_chat_index_page_url(self, url: str) -> bool:
+        current = str(url or "").strip().lower()
+        return "zhipin.com/web/chat" in current and not self.is_recommend_page_url(current) and not self.is_search_page_url(current)
+
+    def ensure_recommend_page(
+        self,
+        on_ready: callable,
+        on_failed: callable | None = None,
+        reason: str = "",
+        attempt: int = 1,
+    ) -> None:
+        current_url = self.browser.url().toString()
+        if self.is_recommend_page_url(current_url):
+            on_ready()
+            return
+        if attempt > 3:
+            self.append_log("推荐页自动跳转失败：右侧页面未能回到 BOSS 推荐牛人页。")
+            if on_failed:
+                on_failed()
+            return
+        context = f"{reason}，" if reason else ""
+        self.append_log(f"{context}检测到右侧当前不在推荐页，正在自动跳转到正确页面（第 {attempt}/3 次）。")
+        self.navigate_boss("https://www.zhipin.com/web/chat/recommend")
+        delay = 2600 if attempt == 1 else 1800
+        QTimer.singleShot(
+            delay,
+            lambda on_ready=on_ready, on_failed=on_failed, reason=reason, attempt=attempt + 1: self.ensure_recommend_page(
+                on_ready,
+                on_failed=on_failed,
+                reason=reason,
+                attempt=attempt,
+            ),
+        )
 
     def ensure_search_page(
         self,
@@ -9614,7 +9664,7 @@ class BossWorkbench(QMainWindow):
             return
         data = dict(row)
         self.append_log(f"准备打开 {data['name']} 的沟通窗口并索要附件简历。")
-        if "zhipin.com/web/chat" not in self.browser.url().toString():
+        if not self.is_chat_index_page_url(self.browser.url().toString()):
             self.navigate_boss("https://www.zhipin.com/web/chat/index")
             QTimer.singleShot(2200, lambda data=data: self.run_pool_chat_open(data, "request_resume"))
             return
@@ -9647,8 +9697,15 @@ class BossWorkbench(QMainWindow):
             QMessageBox.warning(self, "候选人不存在", "没有找到这条候选人记录，可能已被清空。")
             return
         data = dict(row)
+        source = str(data.get("source") or "")
+        friend_id = str(data.get("boss_friend_id") or "").strip()
+        if source in {"主动触达", "搜索找人"} and not friend_id:
+            page_label = "推荐牛人页" if source == "主动触达" else "搜索页"
+            self.append_log(f"准备先回到 {page_label} 精确定位 {data['name']}，避免在当前沟通列表中串位。")
+            self.open_pool_candidate_on_source_page(data, "open_chat")
+            return
         self.append_log(f"准备在 BOSS 中打开 {data['name']} 的沟通窗口。")
-        if "zhipin.com/web/chat" not in self.browser.url().toString():
+        if not self.is_chat_index_page_url(self.browser.url().toString()):
             self.navigate_boss("https://www.zhipin.com/web/chat/index")
             QTimer.singleShot(2200, lambda data=data: self.run_pool_chat_open(data))
             return
@@ -9660,29 +9717,47 @@ class BossWorkbench(QMainWindow):
             QMessageBox.warning(self, "候选人不存在", "没有找到这条候选人记录，可能已被清空。")
             return
         data = dict(row)
-        source = str(data.get("source") or "")
-        if source == "主动触达":
-            self.append_log(f"准备在推荐牛人页打开 {data['name']} 的在线简历源页面。")
-            if "zhipin.com/web/chat/recommend" not in self.browser.url().toString():
-                self.navigate_boss("https://www.zhipin.com/web/chat/recommend")
-                QTimer.singleShot(2600, lambda data=data: self.run_pool_recommend_open(data, "open_source_resume"))
-                return
-            self.run_pool_recommend_open(data, "open_source_resume")
-            return
-        if source == "搜索找人":
-            self.append_log(f"准备在搜索页打开 {data['name']} 的在线简历源页面。")
-            if "zhipin.com/web/chat/search" not in self.browser.url().toString():
-                self.navigate_boss("https://www.zhipin.com/web/chat/search")
-                QTimer.singleShot(2600, lambda data=data: self.run_pool_search_open(data, "open_source_resume"))
-                return
-            self.run_pool_search_open(data, "open_source_resume")
+        if self.open_pool_candidate_on_source_page(data, "open_source_resume"):
             return
         self.append_log(f"准备在沟通页打开 {data['name']} 的在线简历源页面。")
-        if "zhipin.com/web/chat" not in self.browser.url().toString():
+        if not self.is_chat_index_page_url(self.browser.url().toString()):
             self.navigate_boss("https://www.zhipin.com/web/chat/index")
             QTimer.singleShot(2200, lambda data=data: self.run_pool_chat_open(data, "open_source_resume"))
             return
         self.run_pool_chat_open(data, "open_source_resume")
+
+    def pool_action_label(self, action: str) -> str:
+        if action == "open_source_resume":
+            return "打开在线简历源页面"
+        if action == "open_chat":
+            return "打开源候选人"
+        return "打开候选人"
+
+    def open_pool_candidate_on_source_page(self, row: dict[str, Any], action: str) -> bool:
+        source = str(row.get("source") or "")
+        action_label = self.pool_action_label(action)
+        if source == "主动触达":
+            self.append_log(f"准备在推荐牛人页{action_label}：{row['name']}。")
+            self.ensure_recommend_page(
+                lambda row=row, action=action: self.run_pool_recommend_open(row, action),
+                on_failed=lambda row=row, action=action: self.on_pool_source_page_guard_failed(row, "推荐牛人页", action),
+                reason=f"{action_label}前",
+            )
+            return True
+        if source == "搜索找人":
+            self.append_log(f"准备在搜索页{action_label}：{row['name']}。")
+            self.ensure_search_page(
+                lambda row=row, action=action: self.run_pool_search_open(row, action),
+                on_failed=lambda row=row, action=action: self.on_pool_source_page_guard_failed(row, "搜索页", action),
+                reason=f"{action_label}前",
+            )
+            return True
+        return False
+
+    def on_pool_source_page_guard_failed(self, row: dict[str, Any], page_label: str, action: str) -> None:
+        action_label = self.pool_action_label(action)
+        self.append_log(f"{action_label}失败：无法自动回到 {page_label}。")
+        QMessageBox.warning(self, "页面跳转失败", f"没有成功回到 {page_label}，无法继续处理 {row['name']}。")
 
     def run_pool_recommend_open(self, row: dict[str, Any], action: str = "open_source_resume") -> None:
         list_index = int(row.get("list_index") or 1)
@@ -9696,14 +9771,19 @@ class BossWorkbench(QMainWindow):
         payload = self.scan.parse_js_payload(result)
         self.write_scan_log("pool_open_recommend_resume", {"candidate": row, "action": action, "result": payload})
         if payload.get("ok"):
-            self.append_log(
-                f"已在推荐牛人页打开 {row['name']} 的在线简历源页面"
-                f"（列表第 {payload.get('resolvedIndex') or payload.get('targetIndex') or '?'} 位）。"
-            )
+            resolved_index = payload.get("resolvedIndex") or payload.get("targetIndex") or "?"
+            if action == "open_chat":
+                self.append_log(f"已在推荐牛人页精确定位 {row['name']}（列表第 {resolved_index} 位），避免在当前沟通列表中串位。")
+            else:
+                self.append_log(f"已在推荐牛人页打开 {row['name']} 的在线简历源页面（列表第 {resolved_index} 位）。")
             return
         reason = payload.get("reason") or payload.get("error") or "未知错误"
         if reason == "expected-recommend-card-not-found":
             reason = "页面刷新后就找不到没有沟通过的人选了"
+        if action == "open_chat":
+            self.append_log(f"在推荐牛人页定位 {row['name']} 失败：{reason}。")
+            QMessageBox.warning(self, "打开候选人失败", f"没有成功在推荐牛人页定位 {row['name']}：{reason}")
+            return
         self.append_log(f"在推荐牛人页打开 {row['name']} 的在线简历失败：{reason}。")
         QMessageBox.warning(self, "打开源简历失败", f"没有成功在推荐牛人页打开 {row['name']} 的在线简历：{reason}")
 
@@ -9719,12 +9799,17 @@ class BossWorkbench(QMainWindow):
         payload = self.scan.parse_js_payload(result)
         self.write_scan_log("pool_open_search_resume", {"candidate": row, "action": action, "result": payload})
         if payload.get("ok"):
-            self.append_log(
-                f"已在搜索页打开 {row['name']} 的在线简历源页面"
-                f"（列表第 {payload.get('resolvedIndex') or payload.get('targetIndex') or '?'} 位）。"
-            )
+            resolved_index = payload.get("resolvedIndex") or payload.get("targetIndex") or "?"
+            if action == "open_chat":
+                self.append_log(f"已在搜索页精确定位 {row['name']}（列表第 {resolved_index} 位），避免在当前沟通列表中串位。")
+            else:
+                self.append_log(f"已在搜索页打开 {row['name']} 的在线简历源页面（列表第 {resolved_index} 位）。")
             return
         reason = payload.get("reason") or payload.get("error") or "未知错误"
+        if action == "open_chat":
+            self.append_log(f"在搜索页定位 {row['name']} 失败：{reason}。")
+            QMessageBox.warning(self, "打开候选人失败", f"没有成功在搜索页定位 {row['name']}：{reason}")
+            return
         self.append_log(f"在搜索页打开 {row['name']} 的在线简历失败：{reason}。")
         QMessageBox.warning(self, "打开源简历失败", f"没有成功在搜索页打开 {row['name']} 的在线简历：{reason}")
 
@@ -9749,6 +9834,12 @@ class BossWorkbench(QMainWindow):
                 QTimer.singleShot(700, lambda row=row: self.open_source_resume_after_chat(row))
             return
         reason = payload.get("reason") or payload.get("error") or "未知错误"
+        source = str(row.get("source") or "")
+        if action == "open" and source in {"主动触达", "搜索找人"}:
+            page_label = "推荐牛人页" if source == "主动触达" else "搜索页"
+            self.append_log(f"当前沟通列表没有精确匹配到 {row['name']}，正在回到 {page_label} 重新定位，避免串位。")
+            self.open_pool_candidate_on_source_page(row, "open_chat")
+            return
         self.append_log(f"没有打开 {row['name']} 的沟通窗口：{reason}。")
         QMessageBox.warning(
             self,
