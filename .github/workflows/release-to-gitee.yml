@@ -284,7 +284,7 @@ jobs:
           gh release upload "$RELEASE_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
   publish-oss:
-    if: ${{ false }}
+    if: ${{ true }}
     needs:
       - prepare
       - build-windows
@@ -298,6 +298,7 @@ jobs:
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
       OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL }}
       OSS_PREFIX: ${{ needs.prepare.outputs.oss_prefix }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -334,11 +335,17 @@ jobs:
         if: ${{ steps.publish_meta.outputs.skip != 'true' }}
         run: python -m pip install --upgrade oss2
 
-      - name: Download built artifacts
+      - name: Download release assets
         if: ${{ steps.publish_meta.outputs.skip != 'true' }}
-        uses: actions/download-artifact@v4
-        with:
-          path: release-artifacts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-artifacts
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-artifacts \
+            -p 'AIBossWorkbench-*' \
+            -p 'latest*.json'
 
       - name: Upload release to OSS
         if: ${{ steps.publish_meta.outputs.skip != 'true' }}
