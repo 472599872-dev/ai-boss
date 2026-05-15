@@ -314,12 +314,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
-      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
-      OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
+      OSS_ENDPOINT: oss-cn-shanghai.aliyuncs.com
+      OSS_BUCKET_NAME: mova-itai
       OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-      OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL }}
-      OSS_PREFIX: ${{ needs.prepare.outputs.oss_prefix }}
+      OSS_PUBLIC_BASE_URL: https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss
+      OSS_PREFIX: ai-boss
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     steps:
       - name: Checkout source
