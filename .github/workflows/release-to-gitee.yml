@@ -108,10 +108,10 @@ jobs:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
       RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
       GITEE_RELEASE_BASE_URL: ${{ secrets.GITEE_RELEASE_BASE_URL }}
-      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
-      OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
-      OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL }}
-      OSS_PREFIX: ${{ secrets.OSS_PREFIX }}
+      OSS_ENDPOINT: oss-cn-shanghai.aliyuncs.com
+      OSS_BUCKET_NAME: mova-itai
+      OSS_PUBLIC_BASE_URL: https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss
+      OSS_PREFIX: ai-boss
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -213,10 +213,10 @@ jobs:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
       RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
       GITEE_RELEASE_BASE_URL: ${{ secrets.GITEE_RELEASE_BASE_URL }}
-      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
-      OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
-      OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL }}
-      OSS_PREFIX: ${{ secrets.OSS_PREFIX }}
+      OSS_ENDPOINT: oss-cn-shanghai.aliyuncs.com
+      OSS_BUCKET_NAME: mova-itai
+      OSS_PUBLIC_BASE_URL: https://mova-itai.oss-cn-shanghai.aliyuncs.com/ai-boss
+      OSS_PREFIX: ai-boss
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
