@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
-from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWidgets import (
@@ -607,6 +607,9 @@ class Candidate:
     suggestion: str
     boss_data_id: str = ""
     boss_friend_id: str = ""
+    boss_chat_tab: str = ""
+    boss_job_filter: str = ""
+    boss_read_filter: str = ""
 
 
 @dataclass
@@ -675,6 +678,9 @@ class CandidateSeed:
     resume_state: str
     boss_data_id: str = ""
     boss_friend_id: str = ""
+    boss_chat_tab: str = ""
+    boss_job_filter: str = ""
+    boss_read_filter: str = ""
     combined_text: str = ""
 
 
@@ -790,6 +796,9 @@ class Repository:
               list_index integer not null,
               boss_data_id text not null default '',
               boss_friend_id text not null default '',
+              boss_chat_tab text not null default '',
+              boss_job_filter text not null default '',
+              boss_read_filter text not null default '',
               read_state text not null,
               resume_state text not null,
               hits text not null,
@@ -859,6 +868,9 @@ class Repository:
         additions = {
             "boss_data_id": "alter table candidates add column boss_data_id text not null default ''",
             "boss_friend_id": "alter table candidates add column boss_friend_id text not null default ''",
+            "boss_chat_tab": "alter table candidates add column boss_chat_tab text not null default ''",
+            "boss_job_filter": "alter table candidates add column boss_job_filter text not null default ''",
+            "boss_read_filter": "alter table candidates add column boss_read_filter text not null default ''",
         }
         for name, sql in additions.items():
             if name not in columns:
@@ -977,7 +989,8 @@ class Repository:
             self.conn.execute(
                 """
                 update candidates set score=?, status=?, list_index=?, read_state=?, resume_state=?,
-                  boss_data_id=?, boss_friend_id=?, hits=?, misses=?, risks=?, suggestion=?, updated_at=? where id=?
+                  boss_data_id=?, boss_friend_id=?, boss_chat_tab=?, boss_job_filter=?, boss_read_filter=?,
+                  hits=?, misses=?, risks=?, suggestion=?, updated_at=? where id=?
                 """,
                 (
                     candidate.score,
@@ -987,6 +1000,9 @@ class Repository:
                     candidate.resume_state,
                     candidate.boss_data_id,
                     candidate.boss_friend_id,
+                    candidate.boss_chat_tab,
+                    candidate.boss_job_filter,
+                    candidate.boss_read_filter,
                     candidate.hits,
                     candidate.misses,
                     candidate.risks,
@@ -1001,8 +1017,9 @@ class Repository:
             """
             insert into candidates
             (job_id, fingerprint, name, role, years, city, score, status, source, list_index,
-             boss_data_id, boss_friend_id, read_state, resume_state, hits, misses, risks, suggestion, created_at, updated_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             boss_data_id, boss_friend_id, boss_chat_tab, boss_job_filter, boss_read_filter,
+             read_state, resume_state, hits, misses, risks, suggestion, created_at, updated_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
@@ -1017,6 +1034,9 @@ class Repository:
                 candidate.list_index,
                 candidate.boss_data_id,
                 candidate.boss_friend_id,
+                candidate.boss_chat_tab,
+                candidate.boss_job_filter,
+                candidate.boss_read_filter,
                 candidate.read_state,
                 candidate.resume_state,
                 candidate.hits,
@@ -3159,6 +3179,13 @@ class CandidateExtractor:
         boss_friend_id = str(open_request.get("friendId") or payload.get("bossFriendId") or "").strip()
         if not boss_friend_id and boss_data_id:
             boss_friend_id = boss_data_id.split("-", 1)[0]
+        boss_chat_tab = CandidateExtractor.clean_text(
+            str(payload.get("bossChatTab") or payload.get("chatTab") or payload.get("tabLabel") or "")
+        )
+        boss_job_filter = CandidateExtractor.clean_text(
+            str(payload.get("bossJobFilter") or payload.get("jobFilter") or payload.get("jobLabel") or "")
+        )
+        boss_read_filter = CandidateExtractor.clean_text(str(payload.get("bossReadFilter") or payload.get("readFilter") or ""))
         return CandidateSeed(
             name=name,
             role=role,
@@ -3170,6 +3197,9 @@ class CandidateExtractor:
             resume_state=resume_state,
             boss_data_id=boss_data_id,
             boss_friend_id=boss_friend_id,
+            boss_chat_tab=boss_chat_tab,
+            boss_job_filter=boss_job_filter,
+            boss_read_filter=boss_read_filter,
             combined_text=combined,
         )
 
@@ -3230,6 +3260,9 @@ class CandidateExtractor:
                 suggestion=suggestion,
                 boss_data_id=seed.boss_data_id,
                 boss_friend_id=seed.boss_friend_id,
+                boss_chat_tab=seed.boss_chat_tab,
+                boss_job_filter=seed.boss_job_filter,
+                boss_read_filter=seed.boss_read_filter,
             ),
             usage=usage,
             provider=provider,
@@ -3852,6 +3885,7 @@ class ScanController:
         if not indices:
             self.app.append_log("没有可执行候选人，扫描未启动。")
             self.active = False
+            self.app.set_scan_state("未请求", "未开始", 0)
             return
         filter_note = f" · {read_filter}" if mode == "inbound" and read_filter != "全部" else ""
         self.app.append_log(f"{self.mode_label()}开始{filter_note}：已生成 {len(indices)} 位执行队列。")
@@ -4603,6 +4637,53 @@ class ScanController:
               return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none';
             }};
             const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, '\\n').trim();
+            const normalizeContextText = (value) => String(value || '')
+              .replace(/\\s+/g, '')
+              .replace(/[（(]\\d+[）)]/g, '')
+              .replace(/[·•*]/g, '')
+              .trim();
+            const inboundContext = () => {{
+              const userList = document.querySelector('.user-list');
+              const listRect = userList ? userList.getBoundingClientRect() : {{ top: 260, left: 0, right: window.innerWidth }};
+              const nodes = [...document.querySelectorAll('a,button,li,span,div,[role="tab"],[role="button"]')].filter(visible);
+              const knownTabs = ['全部', '新招呼', '沟通中', '已约面', '已获取简历', '已交换电话', 'AI应用候选人'];
+              const isActive = (el) => {{
+                const cls = String(el.className || '');
+                return /active|current|selected|checked|cur/i.test(cls)
+                  || el.getAttribute('aria-selected') === 'true'
+                  || el.getAttribute('aria-current') === 'page';
+              }};
+              const tabCandidates = nodes.map((el) => {{
+                const rect = el.getBoundingClientRect();
+                const label = normalizeContextText(text(el).split('\\n')[0]);
+                return {{ el, rect, label }};
+              }}).filter((item) =>
+                item.label
+                && knownTabs.some((label) => item.label === label || item.label.startsWith(label))
+                && item.rect.bottom <= listRect.top + 60
+                && item.rect.top >= listRect.top - 180
+              );
+              const activeTab = tabCandidates.find((item) => isActive(item.el)) || tabCandidates[0] || null;
+              const jobCandidates = nodes.map((el) => {{
+                const rect = el.getBoundingClientRect();
+                const label = normalizeContextText(text(el).split('\\n')[0]);
+                return {{ el, rect, label }};
+              }}).filter((item) =>
+                item.label
+                && item.label.length <= 24
+                && /职位$|全部职位|当前职位|招聘职位/.test(item.label)
+                && item.rect.left >= listRect.left - 80
+                && item.rect.right <= listRect.right + 80
+                && item.rect.top >= listRect.top - 140
+                && item.rect.bottom <= listRect.top + 90
+              );
+              const activeJob = jobCandidates.find((item) => isActive(item.el)) || jobCandidates[0] || null;
+              return {{
+                bossChatTab: activeTab ? activeTab.label : '',
+                bossJobFilter: activeJob ? activeJob.label : '',
+                bossReadFilter: readFilter
+              }};
+            }};
             const unreadArrayLength = (value) => {{
               if (Array.isArray(value)) return value.length;
               if (typeof value === 'string') {{
@@ -4668,10 +4749,12 @@ class ScanController:
               }});
             const rawUnreadCount = mappedItems.filter((item) => item.readState === '未读').length;
             const items = mappedItems.filter((item) => matches(item.readState));
+            const context = inboundContext();
             return {{
               ok: true,
               source: vueList.length ? 'vue-list$' : 'dom-fallback',
               readFilter,
+              ...context,
               rawListCount: vueList.length || itemNodes.length,
               visibleDomCount: itemNodes.length,
               rawUnreadCount,
@@ -4700,6 +4783,53 @@ class ScanController:
             return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none';
           }};
           const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, '\\n').trim();
+          const normalizeContextText = (value) => String(value || '')
+            .replace(/\\s+/g, '')
+            .replace(/[（(]\\d+[）)]/g, '')
+            .replace(/[·•*]/g, '')
+            .trim();
+          const inboundContext = () => {{
+            const userList = document.querySelector('.user-list');
+            const listRect = userList ? userList.getBoundingClientRect() : {{ top: 260, left: 0, right: window.innerWidth }};
+            const nodes = [...document.querySelectorAll('a,button,li,span,div,[role="tab"],[role="button"]')].filter(visible);
+            const knownTabs = ['全部', '新招呼', '沟通中', '已约面', '已获取简历', '已交换电话', 'AI应用候选人'];
+            const isActive = (el) => {{
+              const cls = String(el.className || '');
+              return /active|current|selected|checked|cur/i.test(cls)
+                || el.getAttribute('aria-selected') === 'true'
+                || el.getAttribute('aria-current') === 'page';
+            }};
+            const tabCandidates = nodes.map((el) => {{
+              const rect = el.getBoundingClientRect();
+              const label = normalizeContextText(text(el).split('\\n')[0]);
+              return {{ el, rect, label }};
+            }}).filter((item) =>
+              item.label
+              && knownTabs.some((label) => item.label === label || item.label.startsWith(label))
+              && item.rect.bottom <= listRect.top + 60
+              && item.rect.top >= listRect.top - 180
+            );
+            const activeTab = tabCandidates.find((item) => isActive(item.el)) || tabCandidates[0] || null;
+            const jobCandidates = nodes.map((el) => {{
+              const rect = el.getBoundingClientRect();
+              const label = normalizeContextText(text(el).split('\\n')[0]);
+              return {{ el, rect, label }};
+            }}).filter((item) =>
+              item.label
+              && item.label.length <= 24
+              && /职位$|全部职位|当前职位|招聘职位/.test(item.label)
+              && item.rect.left >= listRect.left - 80
+              && item.rect.right <= listRect.right + 80
+              && item.rect.top >= listRect.top - 140
+              && item.rect.bottom <= listRect.top + 90
+            );
+            const activeJob = jobCandidates.find((item) => isActive(item.el)) || jobCandidates[0] || null;
+            return {{
+              bossChatTab: activeTab ? activeTab.label : '',
+              bossJobFilter: activeJob ? activeJob.label : '',
+              bossReadFilter: readFilter
+            }};
+          }};
           const attr = (el) => ['ka', 'data-ka', 'data-url', 'title', 'aria-label', 'class']
             .map((name) => el.getAttribute && el.getAttribute(name))
             .filter(Boolean)
@@ -4796,12 +4926,14 @@ class ScanController:
             }};
           }});
           const items = rawItems.filter((item) => matchesReadFilter(item.readState));
+          const context = inboundContext();
           const target = items[targetIndex];
           if (!target) {{
             return {{
               ok: false,
               source: vueList.length ? 'vue-list$' : 'dom-fallback',
               readFilter,
+              ...context,
               rawListCount: rawItems.length,
               visibleDomCount: itemNodes.length,
               listCount: items.length,
@@ -4829,6 +4961,7 @@ class ScanController:
             ok: true,
             source: vueList.length ? 'vue-list$' : 'dom-fallback',
             readFilter,
+            ...context,
             rawListCount: rawItems.length,
             visibleDomCount: itemNodes.length,
             listCount: items.length,
@@ -8604,10 +8737,10 @@ class BossWorkbench(QMainWindow):
         table_layout = QVBoxLayout(table_frame)
         table_layout.setContentsMargins(14, 14, 14, 14)
         table_layout.setSpacing(0)
-        self.pool_table = QTableWidget(0, 9)
+        self.pool_table = QTableWidget(0, 10)
         self.pool_table.setObjectName("PoolTable")
         self.pool_table.setHorizontalHeaderLabels(
-            ["姓名", "方向", "分数", "状态", "来源", "第几位", "已读", "简历", "动作"]
+            ["姓名", "方向", "分数", "状态", "来源", "筛选", "第几位", "已读", "简历", "动作"]
         )
         self.pool_table.verticalHeader().setVisible(False)
         self.pool_table.setAlternatingRowColors(True)
@@ -8914,7 +9047,28 @@ class BossWorkbench(QMainWindow):
         self.browser.setObjectName("BrowserView")
         self.browser.setPage(QWebEnginePage(self.browser_profile, self.browser))
         self.browser.urlChanged.connect(lambda url: self.url_input.setText(url.toString()))
-        outer_layout.addWidget(self.browser, 1)
+        self.browser_host = QFrame()
+        self.browser_host.setObjectName("BrowserHost")
+        self.browser_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        browser_host_layout = QVBoxLayout(self.browser_host)
+        browser_host_layout.setContentsMargins(0, 0, 0, 0)
+        browser_host_layout.setSpacing(0)
+        browser_host_layout.addWidget(self.browser)
+        self.browser_overlay = QFrame(self.browser_host)
+        self.browser_overlay.setObjectName("BrowserOverlay")
+        self.browser_overlay.setVisible(False)
+        self.browser_overlay.setCursor(Qt.ForbiddenCursor)
+        overlay_layout = QVBoxLayout(self.browser_overlay)
+        overlay_layout.setContentsMargins(24, 24, 24, 24)
+        overlay_layout.addStretch(1)
+        overlay_text = QLabel("扫描进行中\n请勿操作右侧 BOSS 页面")
+        overlay_text.setObjectName("BrowserOverlayText")
+        overlay_text.setAlignment(Qt.AlignCenter)
+        overlay_text.setWordWrap(True)
+        overlay_layout.addWidget(overlay_text, 0, Qt.AlignCenter)
+        overlay_layout.addStretch(1)
+        self.browser_host.installEventFilter(self)
+        outer_layout.addWidget(self.browser_host, 1)
         self.log_label = QLabel("系统就绪：等待用户选择扫描任务。")
         self.log_label.setWordWrap(True)
         self.log_label.setObjectName("Log")
@@ -9664,6 +9818,7 @@ class BossWorkbench(QMainWindow):
                 row["score"],
                 self.status_label(row["status"]),
                 row["source"],
+                self.pool_context_label(dict(row)),
                 row["list_index"],
                 row["read_state"],
                 row["resume_state"],
@@ -9712,17 +9867,18 @@ class BossWorkbench(QMainWindow):
             action_layout.addWidget(reject)
             action_widget.setMinimumWidth(420)
             self.pool_table.setRowHeight(row_index, 56)
-            self.pool_table.setCellWidget(row_index, 8, action_widget)
+            self.pool_table.setCellWidget(row_index, 9, action_widget)
         self.pool_table.resizeColumnsToContents()
         self.pool_table.setColumnWidth(0, 120)
         self.pool_table.setColumnWidth(1, 124)
         self.pool_table.setColumnWidth(2, 72)
         self.pool_table.setColumnWidth(3, 90)
         self.pool_table.setColumnWidth(4, 88)
-        self.pool_table.setColumnWidth(5, 72)
+        self.pool_table.setColumnWidth(5, 150)
         self.pool_table.setColumnWidth(6, 72)
-        self.pool_table.setColumnWidth(7, 80)
-        self.pool_table.setColumnWidth(8, 440)
+        self.pool_table.setColumnWidth(7, 72)
+        self.pool_table.setColumnWidth(8, 80)
+        self.pool_table.setColumnWidth(9, 440)
         self.refresh_metrics(rows)
 
     def on_pool_cell_clicked(self, row: int, col: int) -> None:
@@ -9747,6 +9903,16 @@ class BossWorkbench(QMainWindow):
             return bool(str(row.get("boss_friend_id") or "").strip())
         candidate_name = str(row.get("name") or "").strip()
         return self.repo.has_action_log(self.current_job_id, candidate_name, "auto_hello_verified")
+
+    def pool_context_label(self, row: dict[str, Any]) -> str:
+        if str(row.get("source") or "") != "投递人选":
+            return "-"
+        parts = [
+            str(row.get("boss_chat_tab") or "").strip(),
+            str(row.get("boss_job_filter") or "").strip(),
+            str(row.get("boss_read_filter") or row.get("read_state") or "").strip(),
+        ]
+        return " / ".join(part for part in parts if part) or "-"
 
     def refresh_metrics(self, rows: list[sqlite3.Row]) -> None:
         counts = {"待评估": 0, "可沟通": 0, "已索简历": 0, "已淘汰": 0}
@@ -9781,9 +9947,9 @@ class BossWorkbench(QMainWindow):
         self.append_log(f"准备打开 {data['name']} 的沟通窗口并索要附件简历。")
         if not self.is_chat_index_page_url(self.browser.url().toString()):
             self.navigate_boss("https://www.zhipin.com/web/chat/index")
-            QTimer.singleShot(2200, lambda data=data: self.run_pool_chat_open(data, "request_resume"))
+            QTimer.singleShot(2200, lambda data=data: self.run_pool_chat_open_with_context(data, "request_resume"))
             return
-        self.run_pool_chat_open(data, "request_resume")
+        self.run_pool_chat_open_with_context(data, "request_resume")
 
     def mark_resume_requested(self, candidate_id: int) -> None:
         row = self.repo.candidate(candidate_id)
@@ -9820,9 +9986,9 @@ class BossWorkbench(QMainWindow):
         self.append_log(f"准备在 BOSS 中打开 {data['name']} 的沟通窗口。")
         if not self.is_chat_index_page_url(self.browser.url().toString()):
             self.navigate_boss("https://www.zhipin.com/web/chat/index")
-            QTimer.singleShot(2200, lambda data=data: self.run_pool_chat_open(data))
+            QTimer.singleShot(2200, lambda data=data: self.run_pool_chat_open_with_context(data))
             return
-        self.run_pool_chat_open(data)
+        self.run_pool_chat_open_with_context(data)
 
     def open_candidate_source_resume(self, candidate_id: int) -> None:
         row = self.repo.candidate(candidate_id)
@@ -9835,9 +10001,9 @@ class BossWorkbench(QMainWindow):
         self.append_log(f"准备在沟通页打开 {data['name']} 的在线简历源页面。")
         if not self.is_chat_index_page_url(self.browser.url().toString()):
             self.navigate_boss("https://www.zhipin.com/web/chat/index")
-            QTimer.singleShot(2200, lambda data=data: self.run_pool_chat_open(data, "open_source_resume"))
+            QTimer.singleShot(2200, lambda data=data: self.run_pool_chat_open_with_context(data, "open_source_resume"))
             return
-        self.run_pool_chat_open(data, "open_source_resume")
+        self.run_pool_chat_open_with_context(data, "open_source_resume")
 
     def pool_action_label(self, action: str) -> str:
         if action == "open_source_resume":
@@ -9939,6 +10105,49 @@ class BossWorkbench(QMainWindow):
             self.scan.json_script(script),
             lambda result, row=row, action=action: self.on_pool_chat_opened(row, result, action),
         )
+
+    def run_pool_chat_open_with_context(self, row: dict[str, Any], action: str = "open", attempt: int = 1) -> None:
+        if str(row.get("source") or "") != "投递人选":
+            self.run_pool_chat_open(row, action)
+            return
+        self.browser.page().runJavaScript(
+            self.scan.json_script(self.apply_pool_chat_context_script(row)),
+            lambda result, row=row, action=action, attempt=attempt: self.on_pool_chat_context_prepared(row, result, action, attempt),
+        )
+
+    def on_pool_chat_context_prepared(self, row: dict[str, Any], result: Any, action: str, attempt: int) -> None:
+        payload = self.scan.parse_js_payload(result)
+        self.write_scan_log(
+            "pool_chat_context_prepared",
+            {"candidate": row, "action": action, "attempt": attempt, "result": payload},
+        )
+        if payload.get("needsJobOption"):
+            QTimer.singleShot(450, lambda row=row, action=action, attempt=attempt: self.apply_pool_job_context(row, action, attempt))
+            return
+        if payload.get("changed") and attempt < 4:
+            self.append_log(
+                f"已恢复 {row['name']} 的沟通筛选上下文：{self.pool_context_label(row)}，准备定位候选人。"
+            )
+            QTimer.singleShot(800, lambda row=row, action=action, attempt=attempt + 1: self.run_pool_chat_open_with_context(row, action, attempt))
+            return
+        self.run_pool_chat_open(row, action)
+
+    def apply_pool_job_context(self, row: dict[str, Any], action: str, attempt: int) -> None:
+        self.browser.page().runJavaScript(
+            self.scan.json_script(self.apply_pool_job_option_script(row)),
+            lambda result, row=row, action=action, attempt=attempt: self.on_pool_job_context_applied(row, result, action, attempt),
+        )
+
+    def on_pool_job_context_applied(self, row: dict[str, Any], result: Any, action: str, attempt: int) -> None:
+        payload = self.scan.parse_js_payload(result)
+        self.write_scan_log(
+            "pool_job_context_applied",
+            {"candidate": row, "action": action, "attempt": attempt, "result": payload},
+        )
+        if payload.get("changed") and attempt < 4:
+            QTimer.singleShot(700, lambda row=row, action=action, attempt=attempt + 1: self.run_pool_chat_open_with_context(row, action, attempt))
+            return
+        self.run_pool_chat_open(row, action)
 
     def on_pool_chat_opened(self, row: dict[str, Any], result: Any, action: str = "open") -> None:
         payload = self.scan.parse_js_payload(result)
@@ -10235,6 +10444,187 @@ class BossWorkbench(QMainWindow):
         })();
         """
 
+    def apply_pool_chat_context_script(self, row: dict[str, Any]) -> str:
+        payload = json.dumps(
+            {
+                "chatTab": row.get("boss_chat_tab") or "",
+                "jobFilter": row.get("boss_job_filter") or "",
+                "readFilter": row.get("boss_read_filter") or "",
+            },
+            ensure_ascii=False,
+        )
+        return f"""
+        (() => {{
+          try {{
+            const target = {payload};
+            const clean = (value) => String(value || '')
+              .replace(/\\s+/g, '')
+              .replace(/[（(]\\d+[）)]/g, '')
+              .replace(/[·•*]/g, '')
+              .trim();
+            const visible = (el) => {{
+              if (!el) return false;
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none';
+            }};
+            const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, '\\n').trim();
+            const fireMouse = (el) => {{
+              ['mouseover', 'mousedown', 'mouseup', 'click'].forEach((type) => {{
+                el.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true, view: window }}));
+              }});
+            }};
+            const userList = () => document.querySelector('.user-list');
+            const listRect = () => {{
+              const node = userList();
+              return node ? node.getBoundingClientRect() : {{ top: 260, left: 0, right: window.innerWidth }};
+            }};
+            const nodes = () => [...document.querySelectorAll('a,button,li,span,div,[role="tab"],[role="button"],[role="option"]')]
+              .filter(visible)
+              .map((el) => {{
+                const rect = el.getBoundingClientRect();
+                return {{ el, rect, label: clean(text(el).split('\\n')[0]) }};
+              }})
+              .filter((item) => item.label && item.label.length <= 32);
+            const isActive = (el) => {{
+              const cls = String(el.className || '');
+              return /active|current|selected|checked|cur/i.test(cls)
+                || el.getAttribute('aria-selected') === 'true'
+                || el.getAttribute('aria-current') === 'page';
+            }};
+
+            const clickChatTab = () => {{
+              const wanted = clean(target.chatTab);
+              if (!wanted) return null;
+              const rect = listRect();
+              const knownTabs = ['全部', '新招呼', '沟通中', '已约面', '已获取简历', '已交换电话', 'AI应用候选人'];
+              const items = nodes().filter((item) =>
+                knownTabs.some((label) => item.label === label || item.label.startsWith(label))
+                && item.rect.bottom <= rect.top + 60
+                && item.rect.top >= rect.top - 180
+              );
+              const current = items.find((item) => isActive(item.el));
+              if (current && current.label === wanted) return null;
+              const targetItem = items.find((item) => item.label === wanted || item.label.startsWith(wanted));
+              if (!targetItem) {{
+                return {{ type: 'chatTab', ok: false, wanted }};
+              }}
+              fireMouse(targetItem.el);
+              return {{ type: 'chatTab', ok: true, wanted, changed: true }};
+            }};
+
+            const clickReadFilter = () => {{
+              const wantedFilter = clean(target.readFilter);
+              const wanted = wantedFilter.includes('未读') ? '未读' : wantedFilter.includes('已读') ? '已读' : wantedFilter === '全部' ? '全部' : '';
+              if (!wanted) return null;
+              const rect = listRect();
+              const items = nodes().filter((item) =>
+                item.label === wanted
+                && item.rect.left >= rect.left - 80
+                && item.rect.right <= rect.right + 80
+                && item.rect.top >= rect.top - 120
+                && item.rect.bottom <= rect.top + 80
+              );
+              const current = items.find((item) => isActive(item.el));
+              if (current && current.label === wanted) return null;
+              const targetItem = items[0];
+              if (!targetItem) {{
+                return {{ type: 'readFilter', ok: false, wanted }};
+              }}
+              fireMouse(targetItem.el);
+              return {{ type: 'readFilter', ok: true, wanted, changed: true }};
+            }};
+
+            const clickJobFilter = () => {{
+              const wanted = clean(target.jobFilter);
+              if (!wanted) return null;
+              const rect = listRect();
+              const triggerItems = nodes().filter((item) =>
+                /职位$|全部职位|当前职位|招聘职位/.test(item.label)
+                && item.rect.left >= rect.left - 90
+                && item.rect.right <= rect.right + 90
+                && item.rect.top >= rect.top - 150
+                && item.rect.bottom <= rect.top + 100
+              );
+              const current = triggerItems.find((item) => item.label === wanted);
+              if (current) return null;
+              const trigger = triggerItems[0];
+              if (!trigger) {{
+                return {{ type: 'jobFilter', ok: false, wanted }};
+              }}
+              fireMouse(trigger.el);
+              return {{ type: 'jobFilter', ok: true, wanted, changed: true, needsJobOption: true }};
+            }};
+
+            const actions = [];
+            let action = null;
+            for (const step of [clickChatTab, clickJobFilter, clickReadFilter]) {{
+              const result = step();
+              if (result) actions.push(result);
+              if (result && result.changed) {{
+                action = result;
+                break;
+              }}
+            }}
+            return {{
+              ok: true,
+              changed: !!(action && action.changed),
+              needsJobOption: !!(action && action.needsJobOption),
+              action,
+              actions,
+              target,
+              url: location.href
+            }};
+          }} catch (error) {{
+            return {{ ok: false, changed: false, reason: 'script-error', error: String(error && error.stack || error), url: location.href }};
+          }}
+        }})();
+        """
+
+    def apply_pool_job_option_script(self, row: dict[str, Any]) -> str:
+        payload = json.dumps({"jobFilter": row.get("boss_job_filter") or ""}, ensure_ascii=False)
+        return f"""
+        (() => {{
+          try {{
+            const target = {payload};
+            const clean = (value) => String(value || '')
+              .replace(/\\s+/g, '')
+              .replace(/[（(]\\d+[）)]/g, '')
+              .replace(/[·•*]/g, '')
+              .trim();
+            const visible = (el) => {{
+              if (!el) return false;
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none';
+            }};
+            const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, '\\n').trim();
+            const fireMouse = (el) => {{
+              ['mouseover', 'mousedown', 'mouseup', 'click'].forEach((type) => {{
+                el.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true, view: window }}));
+              }});
+            }};
+            const wanted = clean(target.jobFilter);
+            if (!wanted) return {{ ok: true, changed: false, reason: 'empty-job-filter', url: location.href }};
+            const options = [...document.querySelectorAll('a,button,li,span,div,[role="option"],[role="menuitem"]')]
+              .filter(visible)
+              .map((el) => {{
+                const rect = el.getBoundingClientRect();
+                return {{ el, rect, label: clean(text(el).split('\\n')[0]) }};
+              }})
+              .filter((item) => item.label && item.label.length <= 32);
+            const option = options.find((item) => item.label === wanted || item.label.startsWith(wanted));
+            if (!option) {{
+              return {{ ok: false, changed: false, reason: 'job-option-not-found', wanted, url: location.href }};
+            }}
+            fireMouse(option.el);
+            return {{ ok: true, changed: true, wanted, url: location.href }};
+          }} catch (error) {{
+            return {{ ok: false, changed: false, reason: 'script-error', error: String(error && error.stack || error), url: location.href }};
+          }}
+        }})();
+        """
+
     def pool_open_candidate_script(self, row: dict[str, Any]) -> str:
         payload = json.dumps(
             {
@@ -10243,6 +10633,10 @@ class BossWorkbench(QMainWindow):
                 "name": row.get("name") or "",
                 "role": row.get("role") or "",
                 "listIndex": row.get("list_index") or 0,
+                "source": row.get("source") or "",
+                "chatTab": row.get("boss_chat_tab") or "",
+                "jobFilter": row.get("boss_job_filter") or "",
+                "readFilter": row.get("boss_read_filter") or "",
             },
             ensure_ascii=False,
         )
@@ -10251,6 +10645,7 @@ class BossWorkbench(QMainWindow):
           try {{
             const target = {payload};
             const clean = (value) => String(value || '').replace(/\\s+/g, '').trim();
+            const hasSavedContext = target.source === '投递人选' && !!(target.chatTab || target.jobFilter || target.readFilter);
             const listVm = document.querySelector('.user-list') && document.querySelector('.user-list').__vue__;
             const vm = listVm && listVm.$parent;
             const list = vm && Array.isArray(vm.list$) ? vm.list$ : [];
@@ -10285,7 +10680,7 @@ class BossWorkbench(QMainWindow):
               }});
               if (resolvedIndex >= 0) matchMethod = 'name-role';
             }}
-            if (resolvedIndex < 0 && Number(target.listIndex) > 0 && list[Number(target.listIndex) - 1]) {{
+            if (resolvedIndex < 0 && Number(target.listIndex) > 0 && !hasSavedContext && list[Number(target.listIndex) - 1]) {{
               resolvedIndex = Number(target.listIndex) - 1;
               matchMethod = 'list-index-fallback';
             }}
@@ -10359,6 +10754,7 @@ class BossWorkbench(QMainWindow):
             ("来源", f"{row['source']} · 第 {row['list_index']} 位"),
             ("城市/年限", f"{row['city']} · {row['years']}"),
             ("在线简历", str(row["resume_state"])),
+            ("筛选上下文", self.pool_context_label(row)),
             ("当前状态", self.status_label(str(row["status"]))),
         ]
         for index, (label_text, value_text) in enumerate(meta_pairs):
@@ -10600,6 +10996,7 @@ class BossWorkbench(QMainWindow):
         detail_text = (
             f"候选人：{candidate.name} · {candidate.role}\n\n"
             f"来源/序号：{candidate.source} · 第 {candidate.list_index} 位\n"
+            f"筛选上下文：{self.pool_context_label(asdict(candidate))}\n"
             f"城市/年限：{candidate.city} · {candidate.years}\n"
             f"在线简历：{candidate.resume_state}\n\n"
             f"命中项：{candidate.hits}\n\n"
@@ -10637,6 +11034,28 @@ class BossWorkbench(QMainWindow):
             button.setEnabled(not active)
         for button in getattr(self, "scan_stop_buttons", []):
             button.setEnabled(active and not stop_requested)
+        self.set_browser_locked(active)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if obj is getattr(self, "browser_host", None) and event.type() in {QEvent.Type.Resize, QEvent.Type.Show}:
+            self.update_browser_overlay_geometry()
+        return super().eventFilter(obj, event)
+
+    def update_browser_overlay_geometry(self) -> None:
+        overlay = getattr(self, "browser_overlay", None)
+        host = getattr(self, "browser_host", None)
+        if not overlay or not host:
+            return
+        overlay.setGeometry(host.rect())
+        overlay.raise_()
+
+    def set_browser_locked(self, locked: bool) -> None:
+        overlay = getattr(self, "browser_overlay", None)
+        if not overlay:
+            return
+        overlay.setVisible(locked)
+        if locked:
+            self.update_browser_overlay_geometry()
 
     def append_log(self, text: str) -> None:
         self.log_label.setText(text)
@@ -11159,6 +11578,26 @@ class BossWorkbench(QMainWindow):
                 border: 1px solid rgba(16, 24, 21, 0.12);
                 border-radius: 18px;
                 background: white;
+            }
+            QFrame#BrowserHost {
+                border: 1px solid rgba(16, 24, 21, 0.12);
+                border-radius: 18px;
+                background: white;
+            }
+            QFrame#BrowserOverlay {
+                background: rgba(9, 27, 23, 0.62);
+                border-radius: 18px;
+            }
+            QLabel#BrowserOverlayText {
+                min-width: 280px;
+                padding: 24px 32px;
+                border-radius: 20px;
+                background: rgba(255, 255, 255, 0.94);
+                border: 1px solid rgba(255, 255, 255, 0.62);
+                color: #17362d;
+                font-size: 18px;
+                font-weight: 900;
+                line-height: 1.5;
             }
             QLabel#Log {
                 padding: 12px 14px;
