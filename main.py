@@ -40,6 +40,7 @@ from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -63,6 +65,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
+    QTableView,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -76,6 +79,18 @@ APP_ID = "AIBossWorkbench"
 APP_NAME = "TANLU  AI 招聘助理"
 VERSION_FILE_NAME = "app_version.txt"
 APP_ICON_PREVIEW_PATH = "assets/app-icon/app-icon-v1-preview.png"
+POOL_COLUMN_NAME = 0
+POOL_COLUMN_DIRECTION = 1
+POOL_COLUMN_SCORE = 2
+POOL_COLUMN_STATUS = 3
+POOL_COLUMN_SOURCE = 4
+POOL_COLUMN_FILTER = 5
+POOL_COLUMN_LIST_INDEX = 6
+POOL_COLUMN_READ = 7
+POOL_COLUMN_RESUME = 8
+POOL_COLUMN_ACTIONS = 9
+POOL_FROZEN_COLUMNS = (POOL_COLUMN_NAME, POOL_COLUMN_SCORE)
+POOL_HIDDEN_COLUMNS = (POOL_COLUMN_DIRECTION, POOL_COLUMN_FILTER)
 
 
 def packaged_resource_roots() -> list[Path]:
@@ -138,6 +153,113 @@ def resolve_existing_path(value: str) -> Path | None:
         if resolved.exists() and resolved.is_file():
             return resolved
     return None
+
+
+class FrozenColumnsTableWidget(QTableWidget):
+    def __init__(
+        self,
+        row_count: int,
+        column_count: int,
+        frozen_columns: Iterable[int],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(row_count, column_count, parent)
+        self._frozen_columns = tuple(dict.fromkeys(int(col) for col in frozen_columns))
+        self._frozen_view = QTableView(self)
+        self._frozen_view.setModel(self.model())
+        self._frozen_view.setSelectionModel(self.selectionModel())
+        self._frozen_view.setFocusPolicy(Qt.NoFocus)
+        self._frozen_view.setFrameShape(QFrame.NoFrame)
+        self._frozen_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._frozen_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._frozen_view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._frozen_view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._frozen_view.setSelectionMode(self.selectionMode())
+        self._frozen_view.setSelectionBehavior(self.selectionBehavior())
+        self._frozen_view.setAlternatingRowColors(True)
+        self._frozen_view.verticalHeader().hide()
+        self._frozen_view.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        self._frozen_view.setStyleSheet(
+            """
+            QTableView {
+                background: rgba(255, 255, 255, 0.96);
+                border: none;
+                gridline-color: #e5ece8;
+                alternate-background-color: #f6f9f7;
+                selection-background-color: #deefe8;
+                selection-color: #17362d;
+            }
+            QTableView::item {
+                padding: 8px 6px;
+                border: none;
+            }
+            QTableView::item:selected {
+                background: #deefe8;
+                color: #17362d;
+            }
+            """
+        )
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.viewport().stackUnder(self._frozen_view)
+        self._frozen_view.clicked.connect(self._forward_frozen_click)
+        self.horizontalHeader().sectionResized.connect(self._sync_frozen_column_width)
+        self.verticalHeader().sectionResized.connect(self._sync_frozen_row_height)
+        self.verticalScrollBar().valueChanged.connect(self._frozen_view.verticalScrollBar().setValue)
+        self._frozen_view.verticalScrollBar().valueChanged.connect(self.verticalScrollBar().setValue)
+        self.sync_frozen_columns()
+
+    def sync_frozen_columns(self) -> None:
+        frozen_width = 0
+        for column in range(self.columnCount()):
+            should_show = column in self._frozen_columns and not self.isColumnHidden(column)
+            self._frozen_view.setColumnHidden(column, not should_show)
+            if should_show:
+                self._frozen_view.setColumnWidth(column, self.columnWidth(column))
+                frozen_width += self.columnWidth(column)
+        for row in range(self.rowCount()):
+            self._frozen_view.setRowHeight(row, self.rowHeight(row))
+        self.setViewportMargins(frozen_width, 0, 0, 0)
+        self._frozen_view.setVisible(frozen_width > 0)
+        self._update_frozen_geometry()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_frozen_geometry()
+
+    def scrollTo(self, index, hint=QAbstractItemView.ScrollHint.EnsureVisible) -> None:
+        if index.column() not in self._frozen_columns:
+            super().scrollTo(index, hint)
+
+    def _update_frozen_geometry(self) -> None:
+        frozen_width = sum(
+            self.columnWidth(column)
+            for column in self._frozen_columns
+            if not self.isColumnHidden(column)
+        )
+        if frozen_width <= 0:
+            self._frozen_view.hide()
+            return
+        self._frozen_view.setGeometry(
+            self.frameWidth(),
+            self.frameWidth(),
+            frozen_width,
+            self.viewport().height() + self.horizontalHeader().height(),
+        )
+        self._frozen_view.raise_()
+        self._frozen_view.show()
+
+    def _sync_frozen_column_width(self, column: int, _old_size: int, new_size: int) -> None:
+        if column in self._frozen_columns and not self.isColumnHidden(column):
+            self._frozen_view.setColumnWidth(column, new_size)
+            self.sync_frozen_columns()
+
+    def _sync_frozen_row_height(self, row: int, _old_size: int, new_size: int) -> None:
+        self._frozen_view.setRowHeight(row, new_size)
+
+    def _forward_frozen_click(self, index) -> None:
+        self.setCurrentIndex(index)
+        self.cellClicked.emit(index.row(), index.column())
 
 
 def resolve_system_ca_bundle_path() -> Path | None:
@@ -8737,7 +8859,7 @@ class BossWorkbench(QMainWindow):
         table_layout = QVBoxLayout(table_frame)
         table_layout.setContentsMargins(14, 14, 14, 14)
         table_layout.setSpacing(0)
-        self.pool_table = QTableWidget(0, 10)
+        self.pool_table = FrozenColumnsTableWidget(0, 10, POOL_FROZEN_COLUMNS)
         self.pool_table.setObjectName("PoolTable")
         self.pool_table.setHorizontalHeaderLabels(
             ["姓名", "方向", "分数", "状态", "来源", "筛选", "第几位", "已读", "简历", "动作"]
@@ -8750,6 +8872,9 @@ class BossWorkbench(QMainWindow):
         self.pool_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.pool_table.setMinimumHeight(0)
         self.pool_table.cellClicked.connect(self.on_pool_cell_clicked)
+        for column in POOL_HIDDEN_COLUMNS:
+            self.pool_table.setColumnHidden(column, True)
+        self.pool_table.sync_frozen_columns()
         table_layout.addWidget(self.pool_table, 1)
         layout.addWidget(table_frame, 1)
         return page
@@ -9825,9 +9950,9 @@ class BossWorkbench(QMainWindow):
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                if col == 2:
+                if col == POOL_COLUMN_SCORE:
                     item.setTextAlignment(Qt.AlignCenter)
-                if col == 0:
+                if col == POOL_COLUMN_NAME:
                     font = item.font()
                     font.setUnderline(True)
                     item.setFont(font)
@@ -9867,22 +9992,25 @@ class BossWorkbench(QMainWindow):
             action_layout.addWidget(reject)
             action_widget.setMinimumWidth(420)
             self.pool_table.setRowHeight(row_index, 56)
-            self.pool_table.setCellWidget(row_index, 9, action_widget)
+            self.pool_table.setCellWidget(row_index, POOL_COLUMN_ACTIONS, action_widget)
         self.pool_table.resizeColumnsToContents()
-        self.pool_table.setColumnWidth(0, 120)
-        self.pool_table.setColumnWidth(1, 124)
-        self.pool_table.setColumnWidth(2, 72)
-        self.pool_table.setColumnWidth(3, 90)
-        self.pool_table.setColumnWidth(4, 88)
-        self.pool_table.setColumnWidth(5, 150)
-        self.pool_table.setColumnWidth(6, 72)
-        self.pool_table.setColumnWidth(7, 72)
-        self.pool_table.setColumnWidth(8, 80)
-        self.pool_table.setColumnWidth(9, 440)
+        self.pool_table.setColumnWidth(POOL_COLUMN_NAME, 120)
+        self.pool_table.setColumnWidth(POOL_COLUMN_DIRECTION, 124)
+        self.pool_table.setColumnWidth(POOL_COLUMN_SCORE, 72)
+        self.pool_table.setColumnWidth(POOL_COLUMN_STATUS, 90)
+        self.pool_table.setColumnWidth(POOL_COLUMN_SOURCE, 88)
+        self.pool_table.setColumnWidth(POOL_COLUMN_FILTER, 150)
+        self.pool_table.setColumnWidth(POOL_COLUMN_LIST_INDEX, 72)
+        self.pool_table.setColumnWidth(POOL_COLUMN_READ, 72)
+        self.pool_table.setColumnWidth(POOL_COLUMN_RESUME, 80)
+        self.pool_table.setColumnWidth(POOL_COLUMN_ACTIONS, 440)
+        for column in POOL_HIDDEN_COLUMNS:
+            self.pool_table.setColumnHidden(column, True)
+        self.pool_table.sync_frozen_columns()
         self.refresh_metrics(rows)
 
     def on_pool_cell_clicked(self, row: int, col: int) -> None:
-        if col != 0:
+        if col != POOL_COLUMN_NAME:
             return
         item = self.pool_table.item(row, col)
         if item is None:
