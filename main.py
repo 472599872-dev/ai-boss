@@ -8853,6 +8853,21 @@ class BossWorkbench(QMainWindow):
         tools.addWidget(score)
         tools.addWidget(clear)
         layout.addWidget(tools_frame)
+        pool_filter_row = QFrame()
+        pool_filter_row.setObjectName("SubToolbar")
+        pool_filter_layout = QHBoxLayout(pool_filter_row)
+        pool_filter_layout.setContentsMargins(10, 8, 10, 8)
+        pool_filter_layout.setSpacing(8)
+        pool_filter_layout.addWidget(QLabel("是否显示淘汰人员"))
+        pool_filter_layout.addStretch(1)
+        self.pool_show_rejected = QCheckBox()
+        self.pool_show_rejected.setChecked(True)
+        self.pool_show_rejected.stateChanged.connect(self.on_pool_show_rejected_changed)
+        self.pool_show_rejected_value = QLabel("是")
+        self.pool_show_rejected_value.setObjectName("Strong")
+        pool_filter_layout.addWidget(self.pool_show_rejected)
+        pool_filter_layout.addWidget(self.pool_show_rejected_value)
+        layout.addWidget(pool_filter_row)
         table_frame = QFrame()
         table_frame.setObjectName("Card")
         table_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -9929,12 +9944,19 @@ class BossWorkbench(QMainWindow):
         self.write_scan_log("search_scroll", {**payload, "attempt": self.scan.search_scroll_attempts, "target": self.search_limit.value(), "scrollCount": self.scan.search_scroll_attempts, "maxScrolls": 60})
         QTimer.singleShot(700, self.prepare_search_scan)
 
+    def on_pool_show_rejected_changed(self, _state: int) -> None:
+        checked = self.pool_show_rejected.isChecked()
+        self.pool_show_rejected_value.setText("是" if checked else "否")
+        self.refresh_pool()
+
     def refresh_pool(self, order: str | None = None) -> None:
         resolved_order = str(order or self.pool_order or "recent").strip().lower()
         if resolved_order not in {"recent", "score"}:
             resolved_order = "recent"
         self.pool_order = resolved_order
-        rows = self.repo.candidates(self.current_job_id, resolved_order)
+        all_rows = self.repo.candidates(self.current_job_id, resolved_order)
+        show_rejected = self.pool_show_rejected.isChecked()
+        rows = all_rows if show_rejected else [row for row in all_rows if row["status"] != "rejected"]
         self.pool_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             values: list[Any] = [
@@ -10007,7 +10029,7 @@ class BossWorkbench(QMainWindow):
         for column in POOL_HIDDEN_COLUMNS:
             self.pool_table.setColumnHidden(column, True)
         self.pool_table.sync_frozen_columns()
-        self.refresh_metrics(rows)
+        self.refresh_metrics(all_rows)
 
     def on_pool_cell_clicked(self, row: int, col: int) -> None:
         if col != POOL_COLUMN_NAME:
@@ -10354,11 +10376,17 @@ class BossWorkbench(QMainWindow):
             const resumeButton = [...document.querySelectorAll('.operate-icon-item,button,a,[role="button"],.operate-btn,[class*="operate"],[class*="btn"]')]
               .filter(visible)
               .find((el) => textOf(el) === '求简历');
+            const resumeDisabled = !!resumeButton && (
+              resumeButton.disabled
+              || resumeButton.getAttribute('aria-disabled') === 'true'
+              || String(resumeButton.className || '').includes('disabled')
+            );
             return {
               ok: !!editor && !!sendButton && !!resumeButton,
               hasEditor: !!editor,
               hasSendButton: !!sendButton,
               hasResumeButton: !!resumeButton,
+              resumeButtonDisabled: resumeDisabled,
               editorText: editor ? textOf(editor) : '',
               url: location.href
             };
@@ -10369,7 +10397,7 @@ class BossWorkbench(QMainWindow):
         """
 
     def send_resume_request_message(self, row: dict[str, Any]) -> None:
-        message = "你好，可以发一份你的附件简历给我么"
+        message = "您好"
         self.browser.page().runJavaScript(
             self.scan.json_script(self.fill_chat_message_script(message)),
             lambda result, row=row, message=message: self.on_resume_request_message_filled(row, message, result),
@@ -10399,8 +10427,8 @@ class BossWorkbench(QMainWindow):
             self.append_log(f"{row['name']} 的索简历话术发送失败：{reason}。")
             QMessageBox.warning(self, "发送失败", f"没有成功给 {row['name']} 发送索简历话术：{reason}")
             return
-        self.append_log(f"已给 {row['name']} 发送索简历话术，准备点击 BOSS 求简历按钮。")
-        QTimer.singleShot(700, lambda row=row: self.click_boss_resume_request(row))
+        self.append_log(f"已给 {row['name']} 发送首条消息“{message}”，准备点击 BOSS 求简历按钮。")
+        QTimer.singleShot(500, lambda row=row: self.click_boss_resume_request(row))
 
     def click_boss_resume_request(self, row: dict[str, Any]) -> None:
         self.browser.page().runJavaScript(
